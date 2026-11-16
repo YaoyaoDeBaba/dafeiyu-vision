@@ -114,7 +114,16 @@ export function apply(): (() => void) | void {
   const avatarPresent = (): boolean => {
     try {
       const host = (globalThis as { __dafeiyuRooms?: { has?: (id: string) => boolean } }).__dafeiyuRooms
-      return host?.has?.('avatar') === true
+      if (typeof host?.has === 'function') {
+        if (host.has('avatar') === true) return true
+      }
+    } catch {
+      /* 注册表不可用：走下面的 DOM 兜底 */
+    }
+    // 兜底：注册表没给答案时，看形象小窗本体在不在（元素 id 是形象包的公开契约）。
+    // 有它说明形象装着且挂上了，独立入口就该收起来。
+    try {
+      return globalThis.document?.getElementById('dafeiyu-avatar-widget') != null
     } catch {
       return false
     }
@@ -126,6 +135,34 @@ export function apply(): (() => void) | void {
       if (el) el.hidden = hide
     }
   }
+  /*
+   * 宿主派发的菜单动作（2026-11-16 · 0.1.2）。
+   *
+   * 形象小窗的右键菜单在**形象包**里，它只负责派发 `dafeiyu:action`（detail.id）；
+   * 宿主的接收端对这个包的动作是**空转**（能力已随包迁出），所以由本包自己接：
+   *   `vision` → 点一下识图按钮（等价于用户点它）
+   *   `xyq`    → 点一下云雀按钮
+   * 用 click 而不是另开一套 open()，是为了让"菜单打开"和"按钮打开"走**同一条**路径，
+   * 不会出现两种入口行为不一样（上一次就是这个坑：面板在、点了没反应）。
+   */
+  const onHostAction = (event: Event): void => {
+    const id = (event as CustomEvent<{ id?: unknown }>).detail?.id
+    if (id !== 'vision' && id !== 'xyq') return
+    try {
+      const target = globalThis.document?.getElementById(id === 'vision' ? VISION_FAB_ID : XYQ_FAB_ID)
+      if (target && typeof (target as { click?: () => void }).click === 'function') {
+        ;(target as unknown as { click: () => void }).click()
+      }
+    } catch {
+      /* 打不开就什么都不做：绝不因为一个菜单项把页面搞崩 */
+    }
+  }
+  try {
+    globalThis.addEventListener?.('dafeiyu:action', onHostAction)
+  } catch {
+    /* 没有 window 就算了 */
+  }
+
   let fabTimer: ReturnType<typeof setInterval> | undefined
   try {
     syncFabVisibility()
@@ -147,6 +184,11 @@ export function apply(): (() => void) | void {
   return () => {
     try {
       if (fabTimer !== undefined) clearInterval(fabTimer)
+    } catch {
+      /* 清理不许抛 */
+    }
+    try {
+      globalThis.removeEventListener?.('dafeiyu:action', onHostAction)
     } catch {
       /* 清理不许抛 */
     }
