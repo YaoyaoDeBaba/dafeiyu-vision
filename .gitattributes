@@ -1,0 +1,10 @@
+# dist/bundle 是**提交进仓库的产物**（装机不构建）：
+# 强制 LF，否则 Windows 的 core.autocrlf 会在 checkout 时改成 CRLF，
+# 构建产物是 LF ⇒ `npm run check` 会误报"产物没同步"。
+dist/bundle/** text eol=lf
+
+*.ts text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf

@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 类型检查 + 构建
+        run: node .bin-build.mjs
+
+      - name: 测试（20 项判据）
+        run: node --test "dist/tests/*.test.js"
+
+      # 装机不构建：仓库里的 dist/bundle 就是用户装到的产物。
+      # 源码改了却没提交产物 ⇒ 这里变红（本地等价命令：npm run check）
+      - name: dist/bundle 必须与源码同步
+        run: node .check-dist.mjs

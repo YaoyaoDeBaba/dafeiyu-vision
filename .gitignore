@@ -1,0 +1,9 @@
+# 编译产物整体忽略，但 dist/bundle **必须进仓库**：
+#   市场 / git+ 安装不会跑构建（也没有 prepare 钩子保证），
+#   而 package.json 的 main 与 exports['./client'] 都指向 dist/bundle。
+#   漏提交的表现是"装上去插件不加载"，且不报错——形象包踩过这个坑。
+/dist/*
+!/dist/bundle/
+
+node_modules/
+*.log
