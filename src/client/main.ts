@@ -101,6 +101,39 @@ export function apply(): (() => void) | void {
     swallow('识图按钮挂载抛错（已吞掉）', error)
   }
 
+  /*
+   * 有悬浮形象时，本包的两颗独立入口按钮（右下角的识图 FAB 与 🎬 云雀按钮）都收起来：
+   * 那两个动作已经在形象的右键菜单里（由宿主派发 `dafeiyu:action`），再放两个按钮是重复入口，
+   * 视觉上挤且容易点错。**没装/没启用形象**时才各自露出。
+   *
+   * "有没有形象"只认宿主房间注册表（`has('avatar')`）——住客自己宣布"我在"是唯一权威事实。
+   * 每秒看一次：形象是别的包，装/卸/启停都不通知我们。
+   */
+  const VISION_FAB_ID = 'dafeiyu-vision-fab'
+  const XYQ_FAB_ID = 'dafeiyu-xyq-fab'
+  const avatarPresent = (): boolean => {
+    try {
+      const host = (globalThis as { __dafeiyuRooms?: { has?: (id: string) => boolean } }).__dafeiyuRooms
+      return host?.has?.('avatar') === true
+    } catch {
+      return false
+    }
+  }
+  const syncFabVisibility = (): void => {
+    const hide = avatarPresent()
+    for (const id of [VISION_FAB_ID, XYQ_FAB_ID]) {
+      const el = document.getElementById(id) as { hidden?: boolean } | null
+      if (el) el.hidden = hide
+    }
+  }
+  let fabTimer: ReturnType<typeof setInterval> | undefined
+  try {
+    syncFabVisibility()
+    fabTimer = setInterval(syncFabVisibility, 1000)
+  } catch {
+    /* 定时失败只影响"自动收起"，按钮照常在 */
+  }
+
   // ③ 小云雀快捷面板 + 入口按钮。面板默认隐藏，只有点了 🎬 才出现。
   let xyqQuick: ReturnType<typeof mountXyqQuick> | undefined
   let xyqFabCleanup: (() => void) | undefined
@@ -112,6 +145,11 @@ export function apply(): (() => void) | void {
   }
 
   return () => {
+    try {
+      if (fabTimer !== undefined) clearInterval(fabTimer)
+    } catch {
+      /* 清理不许抛 */
+    }
     try {
       rooms?.stop()
     } catch {
