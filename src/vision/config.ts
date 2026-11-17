@@ -62,6 +62,11 @@ export interface VisionConfig {
    * 默认 true。个别网络/风控环境下网页版会要求有头窗口，那时改成 false（会弹出真窗口）。
    */
   webHeadless: boolean
+  /**
+   * 仅网页版协议：在哪个「项目」里发起会话（豆包有项目功能，留空=不指定）。
+   * 目的：让识图会话自动归到某个项目下，不污染「最近」列表。
+   */
+  webProject: string
 }
 
 export const DEFAULT_VISION_PROMPT =
@@ -81,6 +86,7 @@ export const DEFAULT_VISION_CONFIG: VisionConfig = {
   requestTemplate: '',
   responsePath: '',
   webHeadless: true,
+  webProject: '',
 }
 
 /** 设置页看到的配置：key 打码。 */
@@ -108,6 +114,7 @@ export function toView(config: VisionConfig): VisionConfigView {
     requestTemplate: config.requestTemplate,
     responsePath: config.responsePath,
     webHeadless: config.webHeadless,
+    webProject: config.webProject,
     apiKeySet: config.apiKey !== '',
     apiKeyHint: redactKey(config.apiKey),
   }
@@ -150,6 +157,7 @@ export function normalizeVisionConfig(input: unknown, base: VisionConfig = DEFAU
     requestTemplate: cleanString(raw.requestTemplate, base.requestTemplate, 8_000),
     responsePath: cleanString(raw.responsePath, base.responsePath, 200),
     webHeadless: typeof raw.webHeadless === 'boolean' ? raw.webHeadless : base.webHeadless,
+    webProject: cleanString(raw.webProject, base.webProject, 100),
   }
 }
 

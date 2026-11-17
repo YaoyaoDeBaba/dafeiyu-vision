@@ -56,6 +56,11 @@ export interface WebSiteSpec {
    * 点它自己的「发送」按钮则一次成功。
    */
   sendSelector?: string
+  /**
+   * 可选：输入框里那颗「项目」chip 的文案。给了它才支持「在指定项目里发起会话」
+   * （2026-11-17 实测豆包：点 chip → 弹层选项目 → chip 变成项目名 → 之后发的消息自动归到该项目）。
+   */
+  projectChip?: string
 }
 
 export const DOUBAO: WebSiteSpec = {
@@ -76,6 +81,7 @@ export const DOUBAO: WebSiteSpec = {
     return true;
   })()`,
   fileInputSelector: 'input[type=file]',
+  projectChip: '项目',
   answerSelectors: [
     '[data-testid="message_text_content"]',
     '[data-testid="receive_message"] [data-testid*="text"]',
@@ -237,10 +243,16 @@ function editorEmptyExpression(selector: string): string {
  * 消息一直躺在框里）。改发真鼠标事件后一次成功。
  */
 export async function clickElement(client: CdpClient, selector: string): Promise<boolean> {
+  return clickExpression(client, `document.querySelector(${JSON.stringify(selector)})`)
+}
+
+/** 点「某个表达式算出来的元素」（选择器表达不了的：按文本找按钮之类）。 */
+export async function clickExpression(client: CdpClient, expression: string): Promise<boolean> {
   const box = await client
     .evaluate<{ x: number; y: number } | null>(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      const el = ${expression};
       if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return null;
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -296,6 +308,8 @@ export interface AskOptions {
   prompt: string
   /** 整体超时（含上传与生成）。 */
   timeoutMs: number
+  /** 可选：在哪个「项目」里发起会话（只有支持 projectChip 的站点有效）。 */
+  project?: string
   log?: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
 }
 
@@ -318,7 +332,6 @@ export function answerBudgetMs(timeoutMs: number): number {
  * 一次完整提问。返回模型给的文本；任何环节失败都抛 `VisionError`（带站点名与下一步）。
  */
 export async function askSite(client: CdpClient, site: WebSiteSpec, options: AskOptions): Promise<AskResult> {
-  const startedAt = Date.now()
   const log = options.log ?? ((): void => undefined)
 
   await client.goto(site.homeUrl)
@@ -336,6 +349,35 @@ export async function askSite(client: CdpClient, site: WebSiteSpec, options: Ask
       if (!clean) log('新对话没清干净，继续（可能抽到旧回答）', { site: site.id })
     }
   }
+
+  // ⓪2 指定项目：把这次会话归到项目里（豆包支持；Gemini 没这能力，忽略）
+  if (options.project && options.project.trim() !== '') {
+    if (!site.projectChip) {
+      log('该站点不支持「项目」，忽略 webProject', { site: site.id })
+    } else {
+      const moved = await selectProject(client, site, options.project.trim())
+      if (!moved) {
+        throw new VisionError(
+          `${site.label}切不到项目「${options.project.trim()}」：确认侧栏「项目」下确实有这个名字（拼写/空格敏感），或该站点不支持项目`,
+          0,
+        )
+      }
+      log('已切到项目', { site: site.id, project: options.project.trim() })
+    }
+  }
+
+  return askOnCurrentPage(client, site, options)
+}
+
+/**
+ * 在**当前页面**上提一次问（不导航、不点新对话）。
+ *
+ * 单独抽出来是为了「在指定项目里发起会话」这种场景：项目页有自己的路由与对话列表，
+ * 一 `goto` 就回不到项目里了（2026-11-17 加）。
+ */
+export async function askOnCurrentPage(client: CdpClient, site: WebSiteSpec, options: AskOptions): Promise<AskResult> {
+  const startedAt = Date.now()
+  const log = options.log ?? ((): void => undefined)
 
   // ⓪5 先清空输入框——**必须在塞图之前**：Gemini 的附件是挂在 rich-textarea 里的，
   // 清空编辑器时 `execCommand('delete')` 会把刚上传的图一起删掉（2026-11-17 实测）。
@@ -418,6 +460,32 @@ export async function askSite(client: CdpClient, site: WebSiteSpec, options: Ask
       /* ignore */
     }
   }
+}
+
+/**
+ * 把当前对话归到指定「项目」里（豆包的能力，Gemini 没有）。
+ *
+ * 实测路径（2026-11-17）：输入框第二行那颗「项目」chip → 弹层里选项目 →
+ * chip 变成项目名 → 之后发的消息就落在该项目下（侧栏「项目」分组里能看到新会话）。
+ *
+ * 返回 false 表示没切成（项目不存在 / 弹层没出来 / 前端改版），调用方据此报人话。
+ */
+export async function selectProject(client: CdpClient, site: WebSiteSpec, projectName: string): Promise<boolean> {
+  if (!site.projectChip || projectName.trim() === '') return false
+  const chip = `Array.from(document.querySelectorAll('button')).find((b) => (b.innerText || '').trim() === ${JSON.stringify(site.projectChip)})`
+  if (!(await clickExpression(client, chip))) return false
+  await wait(900)
+
+  // 弹层里的项目项：同名元素可能有多处（侧栏也有一个），取**最靠下**的那个（弹层贴着输入框）
+  const item = `Array.from(document.querySelectorAll('div, button, li, [role="menuitem"], [role="option"]'))
+      .filter((el) => (el.innerText || '').trim() === ${JSON.stringify(projectName)})
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]`
+  if (!(await clickExpression(client, item))) return false
+  await wait(1_200)
+
+  return client
+    .evaluate<boolean>(`Array.from(document.querySelectorAll('button')).some((b) => (b.innerText || '').trim() === ${JSON.stringify(projectName)})`)
+    .catch(() => false)
 }
 
 /** 只探登录态（不提问）：给设置页/路由用。 */

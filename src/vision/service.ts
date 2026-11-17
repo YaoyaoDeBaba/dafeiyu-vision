@@ -46,7 +46,7 @@ export async function recognizeViaBrowser(
   const result = await recognizeViaWeb(
     site,
     { base64: image.base64, mime: image.mime, prompt, timeoutMs: config.timeoutMs },
-    { dshHome, headless: config.webHeadless, log },
+    { dshHome, headless: config.webHeadless, project: config.webProject, log },
   )
   return result.truncated ? `${result.text}\n\n（网页版生成超时被截断：以上是已生成的部分，可加大超时或重试）` : result.text
 }

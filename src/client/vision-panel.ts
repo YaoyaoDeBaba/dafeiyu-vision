@@ -43,6 +43,8 @@ export interface VisionConfigView {
   apiKeyHint: string
   /** 仅网页版协议：识图时要不要弹真窗口（默认无头）。 */
   webHeadless?: boolean
+  /** 仅网页版协议：在哪个「项目」里发起会话（豆包有项目功能，留空=不指定）。 */
+  webProject?: string
 }
 
 export interface VisionPanelDeps {
@@ -144,6 +146,7 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
           requestTemplate: cfg.requestTemplate,
           responsePath: cfg.responsePath,
           webHeadless: cfg.webHeadless !== false,
+          webProject: cfg.webProject ?? '',
         }
         // 空串 = 不改 key（密码框不显示已存的值）
         if (apiKey.trim() !== '') payload.apiKey = apiKey.trim()
@@ -235,6 +238,14 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
               }),
               '识图时弹出浏览器窗口（默认无头；被风控挡住时才需要勾上）',
             ] })
+          : null,
+        isWebProtocolId(cfg.protocol)
+          ? fieldGroup('项目（豆包有项目功能；留空 = 不指定，会话进「最近」）', h('input', {
+              style: fieldStyle,
+              value: cfg.webProject ?? '',
+              placeholder: '例如：甲鱼乙豆（要跟网页里那个项目名一字不差）',
+              onChange: (event: Event) => patch({ webProject: (event.target as HTMLInputElement).value }),
+            }))
           : null,
         fieldGroup('识图提示词（告诉外挂模型怎么描述图片）', h('textarea', { style: { ...fieldStyle, minHeight: '72px', resize: 'vertical' }, rows: 3, value: cfg.prompt, onChange: (event: Event) => patch({ prompt: (event.target as HTMLTextAreaElement).value }) })),
         h('div', { style: rowStyle, children: [

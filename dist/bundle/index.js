@@ -73,7 +73,8 @@ var DEFAULT_VISION_CONFIG = {
   timeoutMs: 6e4,
   requestTemplate: "",
   responsePath: "",
-  webHeadless: true
+  webHeadless: true,
+  webProject: ""
 };
 function redactKey(key) {
   const value = String(key ?? "");
@@ -92,6 +93,7 @@ function toView(config) {
     requestTemplate: config.requestTemplate,
     responsePath: config.responsePath,
     webHeadless: config.webHeadless,
+    webProject: config.webProject,
     apiKeySet: config.apiKey !== "",
     apiKeyHint: redactKey(config.apiKey)
   };
@@ -125,7 +127,8 @@ function normalizeVisionConfig(input, base = DEFAULT_VISION_CONFIG) {
     timeoutMs: timeout,
     requestTemplate: cleanString(raw.requestTemplate, base.requestTemplate, 8e3),
     responsePath: cleanString(raw.responsePath, base.responsePath, 200),
-    webHeadless: typeof raw.webHeadless === "boolean" ? raw.webHeadless : base.webHeadless
+    webHeadless: typeof raw.webHeadless === "boolean" ? raw.webHeadless : base.webHeadless,
+    webProject: cleanString(raw.webProject, base.webProject, 100)
   };
 }
 function detectProtocol(apiBase) {
@@ -879,6 +882,7 @@ var DOUBAO = {
     return true;
   })()`,
   fileInputSelector: "input[type=file]",
+  projectChip: "\u9879\u76EE",
   answerSelectors: [
     '[data-testid="message_text_content"]',
     '[data-testid="receive_message"] [data-testid*="text"]',
@@ -991,9 +995,13 @@ function editorEmptyExpression(selector) {
   return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.innerText || '').trim() === '' : false })()`;
 }
 async function clickElement(client, selector) {
+  return clickExpression(client, `document.querySelector(${JSON.stringify(selector)})`);
+}
+async function clickExpression(client, expression) {
   const box = await client.evaluate(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      const el = ${expression};
       if (!el) return null;
+      el.scrollIntoView({ block: 'center' });
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return null;
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -1031,7 +1039,6 @@ function answerBudgetMs(timeoutMs) {
   return Math.max(Number.isFinite(timeoutMs) ? timeoutMs : 0, 15e3);
 }
 async function askSite(client, site, options) {
-  const startedAt = Date.now();
   const log = options.log ?? (() => void 0);
   await client.goto(site.homeUrl);
   const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25e3);
@@ -1045,6 +1052,25 @@ async function askSite(client, site, options) {
       if (!clean) log("\u65B0\u5BF9\u8BDD\u6CA1\u6E05\u5E72\u51C0\uFF0C\u7EE7\u7EED\uFF08\u53EF\u80FD\u62BD\u5230\u65E7\u56DE\u7B54\uFF09", { site: site.id });
     }
   }
+  if (options.project && options.project.trim() !== "") {
+    if (!site.projectChip) {
+      log("\u8BE5\u7AD9\u70B9\u4E0D\u652F\u6301\u300C\u9879\u76EE\u300D\uFF0C\u5FFD\u7565 webProject", { site: site.id });
+    } else {
+      const moved = await selectProject(client, site, options.project.trim());
+      if (!moved) {
+        throw new VisionError(
+          `${site.label}\u5207\u4E0D\u5230\u9879\u76EE\u300C${options.project.trim()}\u300D\uFF1A\u786E\u8BA4\u4FA7\u680F\u300C\u9879\u76EE\u300D\u4E0B\u786E\u5B9E\u6709\u8FD9\u4E2A\u540D\u5B57\uFF08\u62FC\u5199/\u7A7A\u683C\u654F\u611F\uFF09\uFF0C\u6216\u8BE5\u7AD9\u70B9\u4E0D\u652F\u6301\u9879\u76EE`,
+          0
+        );
+      }
+      log("\u5DF2\u5207\u5230\u9879\u76EE", { site: site.id, project: options.project.trim() });
+    }
+  }
+  return askOnCurrentPage(client, site, options);
+}
+async function askOnCurrentPage(client, site, options) {
+  const startedAt = Date.now();
+  const log = options.log ?? (() => void 0);
   await clearEditor(client, site.editorSelector);
   const opened = await client.evaluate(site.openUpload).catch(() => false);
   if (!opened) throw new VisionError(`${site.label}\u9875\u9762\u4E0A\u627E\u4E0D\u5230\u4E0A\u4F20\u5165\u53E3\uFF08\u524D\u7AEF\u53EF\u80FD\u6539\u7248\u4E86\uFF09`, 0);
@@ -1112,6 +1138,18 @@ async function askSite(client, site, options) {
     } catch {
     }
   }
+}
+async function selectProject(client, site, projectName) {
+  if (!site.projectChip || projectName.trim() === "") return false;
+  const chip = `Array.from(document.querySelectorAll('button')).find((b) => (b.innerText || '').trim() === ${JSON.stringify(site.projectChip)})`;
+  if (!await clickExpression(client, chip)) return false;
+  await wait2(900);
+  const item = `Array.from(document.querySelectorAll('div, button, li, [role="menuitem"], [role="option"]'))
+      .filter((el) => (el.innerText || '').trim() === ${JSON.stringify(projectName)})
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]`;
+  if (!await clickExpression(client, item)) return false;
+  await wait2(1200);
+  return client.evaluate(`Array.from(document.querySelectorAll('button')).some((b) => (b.innerText || '').trim() === ${JSON.stringify(projectName)})`).catch(() => false);
 }
 async function probeLogin(client, site) {
   await client.goto(site.loginUrl);
@@ -1197,6 +1235,7 @@ async function recognizeViaWeb(site, input, options) {
         mime: input.mime,
         prompt: input.prompt,
         timeoutMs: input.timeoutMs,
+        project: options.project,
         log: options.log
       });
     } finally {
@@ -1263,7 +1302,7 @@ async function recognizeViaBrowser(config, image, dshHome, log) {
   const result = await recognizeViaWeb(
     site,
     { base64: image.base64, mime: image.mime, prompt, timeoutMs: config.timeoutMs },
-    { dshHome, headless: config.webHeadless, log }
+    { dshHome, headless: config.webHeadless, project: config.webProject, log }
   );
   return result.truncated ? `${result.text}
 

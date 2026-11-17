@@ -24,6 +24,8 @@ export interface WebOptions {
   minGapMs?: number
   /** 空闲多久关浏览器。 */
   idleMs?: number
+  /** 在哪个「项目」里发起会话（豆包支持，留空=不指定）。 */
+  project?: string
   log?: WebLog
 }
 
@@ -121,6 +123,7 @@ export async function recognizeViaWeb(
           mime: input.mime,
           prompt: input.prompt,
           timeoutMs: input.timeoutMs,
+          project: options.project,
           log: options.log,
         })
       } finally {

@@ -37,6 +37,8 @@ interface FakeOptions {
   uploading?: boolean
   /** 上传入口点不到（模拟改版）。 */
   noUploadButton?: boolean
+  /** 弹层里找不到项目（模拟项目名不存在）。 */
+  noProject?: boolean
 }
 
 interface FakeClient extends CdpClient {
@@ -54,6 +56,12 @@ function fakeClient(options: FakeOptions = {}): FakeClient {
 
   const evaluate = async (expression: string): Promise<unknown> => {
     calls.push(`eval:${expression.slice(0, 160)}`)
+    // 0) clickExpression 的取坐标：区分「项目 chip」和「弹层里的项目项」
+    if (expression.includes('scrollIntoView')) {
+      calls.push(expression.includes('menuitem') ? 'click:item' : 'click:chip')
+      if (expression.includes('menuitem')) return options.noProject ? null : { x: 20, y: 20 }
+      return { x: 10, y: 10 }
+    }
     // 1) 登录探针（两个站点各有一套判据）
     if (expression.includes('to_login_button') || expression.includes('ServiceLogin')) return options.loggedIn !== false
     // 2) 回答抽取
@@ -138,6 +146,10 @@ test('配置：网页版协议被接受，且不吃 key', () => {
   assert.equal(normalizeVisionConfig({}).webHeadless, DEFAULT_VISION_CONFIG.webHeadless)
   assert.equal(normalizeVisionConfig({ webHeadless: 'yes' }).webHeadless, DEFAULT_VISION_CONFIG.webHeadless)
 
+  // 网页版项目名：默认空、首尾空白会被裁掉
+  assert.equal(normalizeVisionConfig({}).webProject, '')
+  assert.equal(normalizeVisionConfig({ webProject: '  甲鱼乙豆  ' }).webProject, '甲鱼乙豆')
+
   // 未知协议仍然回落到 base
   assert.equal(normalizeVisionConfig({ protocol: 'web-nope' }).protocol, 'auto')
 })
@@ -215,6 +227,37 @@ test('Gemini：登录探针在未登录时返回 false', async () => {
   assert.equal(probe.loggedIn, false)
   const ok = await probeLogin(fakeClient({ loggedIn: true }), GEMINI)
   assert.equal(ok.loggedIn, true)
+})
+
+test('项目：给了项目名 ⇒ 点 chip → 选项目 → 确认 chip 变成项目名', async () => {
+  const client = fakeClient({ loggedIn: true })
+  const result = await askSite(client, DOUBAO, { ...IMAGE, prompt: '看图', timeoutMs: 20_000, project: '甲鱼乙豆' })
+  assert.match(result.text, /RED CIRCLE/)
+  // 点过 chip（含 scrollIntoView 的取坐标调用）并且点过弹层里的项目项
+  assert.ok(client.calls.includes('click:chip'))
+  assert.ok(client.calls.includes('click:item'))
+  assert.ok(client.calls.some((c) => c.includes('甲鱼乙豆')))
+})
+
+test('项目：项目名不存在 ⇒ 明确报错，不偷偷发到「最近」里', async () => {
+  const client = fakeClient({ loggedIn: true, noProject: true })
+  await assert.rejects(
+    () => askSite(client, DOUBAO, { ...IMAGE, prompt: '看图', timeoutMs: 20_000, project: '不存在的项目' }),
+    (error: unknown) => {
+      assert.ok(error instanceof VisionError)
+      assert.match(error.message, /切不到项目「不存在的项目」/)
+      return true
+    },
+  )
+  assert.equal(client.insertedText, '')
+})
+
+test('项目：Gemini 没有项目能力，传了也不点（不报错、不空转）', async () => {
+  const client = fakeClient({ loggedIn: true })
+  const result = await askSite(client, GEMINI, { ...IMAGE, prompt: '看图', timeoutMs: 20_000, project: '甲鱼乙豆' })
+  assert.match(result.text, /RED CIRCLE/)
+  // 没有去点任何「项目 chip」
+  assert.equal(client.calls.some((c) => c.includes('scrollIntoView')), false)
 })
 
 test('路由常量：浏览器面与宿主面逐字一致（拼出来的常量在产物里找不到）', () => {
