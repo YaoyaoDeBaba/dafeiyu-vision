@@ -81,6 +81,75 @@ function makeRenderers(): RoomRenderers {
   }
 }
 
+/**
+ * 跟着「形象在不在」同步入口可见性 —— **不用定时器**（2026-11-17 · 性能）。
+ *
+ * 原来是每秒一次的 setInterval，从页面打开跑到插件卸载。本体 0.9.0-dafeiyu.103
+ * 已为同一件事改过口径（不许用定时器做兜底同步，改事件 + MutationObserver），这里对齐：
+ *   1. dafeiyu:rooms-ready：住客（形象）晚于本包挂载时会派发；
+ *   2. DOM 观察：形象小窗被移除/重建（客户端重挂、热重载）。
+ * rAF 合并，一次变化最多算一次；没有 rAF 的环境（测试夹具）直接同步跑。
+ * 返回清理函数：卸载时必须断开，否则每挂一次叠一份。
+ */
+function watchFabVisibility(sync: () => void): () => void {
+  const scope = globalThis as {
+    addEventListener?: (type: string, fn: () => void) => void
+    removeEventListener?: (type: string, fn: () => void) => void
+    requestAnimationFrame?: (cb: () => void) => unknown
+    MutationObserver?: new (cb: () => void) => { observe: (node: unknown, options: unknown) => void; disconnect: () => void }
+    document?: { body?: unknown }
+  }
+  let queued = false
+  const run = (): void => {
+    queued = false
+    try {
+      sync()
+    } catch {
+      /* 同步失败只影响自动收起 */
+    }
+  }
+  const schedule = (): void => {
+    if (queued) return
+    queued = true
+    try {
+      const raf = scope.requestAnimationFrame
+      if (typeof raf === 'function') raf(run)
+      else run()
+    } catch {
+      run()
+    }
+  }
+  try {
+    scope.addEventListener?.('dafeiyu:rooms-ready', schedule)
+  } catch {
+    /* 没有事件就算了 */
+  }
+  let observer: { disconnect?: () => void } | undefined
+  try {
+    const MO = scope.MutationObserver
+    const body = scope.document?.body
+    if (MO && body) {
+      const mo = new MO(schedule)
+      mo.observe(body, { childList: true, subtree: true })
+      observer = mo
+    }
+  } catch {
+    /* 没有 MutationObserver 就只靠事件那一条 */
+  }
+  return () => {
+    try {
+      scope.removeEventListener?.('dafeiyu:rooms-ready', schedule)
+    } catch {
+      /* ignore */
+    }
+    try {
+      observer?.disconnect?.()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export function apply(): (() => void) | void {
   // ① 两间房。宿主版本旧（没有 `window.__dafeiyuRooms`）时 registerDafeiyuRooms 静默返回
   //    undefined —— 那不是故障，别 console.error。
@@ -132,7 +201,8 @@ export function apply(): (() => void) | void {
     const hide = avatarPresent()
     for (const id of [VISION_FAB_ID, XYQ_FAB_ID]) {
       const el = document.getElementById(id) as { hidden?: boolean } | null
-      if (el) el.hidden = hide
+      // 值没变就别写：写 hidden 会让宿主重算样式，白做
+      if (el && el.hidden !== hide) el.hidden = hide
     }
   }
   /*
@@ -163,12 +233,21 @@ export function apply(): (() => void) | void {
     /* 没有 window 就算了 */
   }
 
-  let fabTimer: ReturnType<typeof setInterval> | undefined
+  /*
+   * 入口收起的同步（2026-11-17 · 性能）。
+   *
+   * 原来是每秒一次定时器，从页面打开一直跑到插件卸载：DSH 开着一天就转一天。
+   * 本体在 0.9.0-dafeiyu.103 已为同一件事改过口径（不许用定时器做兜底同步，改事件 +
+   * MutationObserver），这里对齐：
+   *   · dafeiyu:rooms-ready（形象晚挂载）
+   *   · DOM 观察（形象小窗被增删/重建），rAF 合并，没有常驻节拍
+   */
+  let stopFabSync: (() => void) | undefined
   try {
     syncFabVisibility()
-    fabTimer = setInterval(syncFabVisibility, 1000)
+    stopFabSync = watchFabVisibility(syncFabVisibility)
   } catch {
-    /* 定时失败只影响"自动收起"，按钮照常在 */
+    /* 观察器起不来只影响"自动收起"，按钮照常在 */
   }
 
   // ③ 小云雀快捷面板 + 入口按钮。面板默认隐藏，只有点了 🎬 才出现。
@@ -183,7 +262,7 @@ export function apply(): (() => void) | void {
 
   return () => {
     try {
-      if (fabTimer !== undefined) clearInterval(fabTimer)
+      stopFabSync?.()
     } catch {
       /* 清理不许抛 */
     }
