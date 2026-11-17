@@ -1,3 +1,8 @@
+// src/vision/start.ts
+import path5 from "node:path";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 // src/http/guards.ts
 var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 var HOST_ORIGIN_SCHEMES = /* @__PURE__ */ new Set(["dsh-app:"]);
@@ -178,16 +183,16 @@ function promptOf(config, image) {
   const custom = typeof image.prompt === "string" ? image.prompt.trim() : "";
   return custom !== "" ? custom : config.prompt;
 }
-function deepGet(value, path8) {
+function deepGet(value, path10) {
   let cursor = value;
-  for (const key of path8) {
+  for (const key of path10) {
     if (cursor === null || typeof cursor !== "object") return void 0;
     cursor = cursor[key];
   }
   return cursor;
 }
-function splitPath(path8) {
-  return String(path8 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
+function splitPath(path10) {
+  return String(path10 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
 }
 function textFrom(value) {
   if (typeof value === "string") return value.trim();
@@ -1511,20 +1516,353 @@ function createVisionService(dshHome, log, deps) {
   };
 }
 
+// src/vision/tools.ts
+import { readFile } from "node:fs/promises";
+var MIME_BY_EXT = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp"
+};
+function mimeOf(file) {
+  const ext = String(file).split(".").pop()?.toLowerCase() ?? "";
+  return MIME_BY_EXT[ext] ?? "image/png";
+}
+function ignoredKeys(args, known) {
+  return Object.keys(args ?? {}).filter((key) => !known.includes(key));
+}
+function stringTool(definition) {
+  return {
+    name: definition.name,
+    description: definition.description,
+    parameters: definition.parameters,
+    output: {
+      schema: { type: "string" },
+      render: (_args, value) => [{ type: "text", text: String(value) }]
+    },
+    timeoutMs: definition.timeoutMs,
+    execute: definition.execute
+  };
+}
+function buildVisionTools(service, deps) {
+  return [
+    stringTool({
+      name: "recognize_image",
+      description: '\u628A\u4E00\u5F20\u672C\u5730\u56FE\u7247\u4EA4\u7ED9\u5916\u6302\u89C6\u89C9\u80FD\u529B\uFF08API \u6A21\u578B\u6216\u672C\u673A\u5DF2\u767B\u5F55\u7684\u7F51\u9875\u7248\u8C46\u5305/Gemini\uFF09\uFF0C\u8FD4\u56DE\u56FE\u7247\u5185\u5BB9\u7684\u8BE6\u7EC6\u6587\u672C\u63CF\u8FF0\uFF0C\u542B\u9010\u5B57\u8F6C\u5F55\u3002\u7528\u4E8E\u770B\u622A\u56FE\u3001\u7167\u7247\u3001\u56FE\u8868\u3001UI\u3001\u62A5\u9519\u622A\u56FE\u3002\u4F20 image_path\uFF08\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF1Bprompt \u53EF\u9009\uFF0C\u7528\u4E8E\u672C\u6B21\u4E34\u65F6\u6307\u4EE4\uFF08\u4F8B\u5982"\u53EA\u6284\u62A5\u9519\u90A3\u51E0\u884C"\uFF09\uFF0C\u4E0D\u4F20\u7528\u8BBE\u7F6E\u9875\u7684\u9ED8\u8BA4\u8BC6\u56FE\u63D0\u793A\u8BCD\u3002\u7F51\u9875\u7248\u90A3\u4E00\u8DEF\u5355\u6B21 10~25 \u79D2\uFF0C\u522B\u5BF9\u540C\u4E00\u5F20\u56FE\u8FDE\u7EED\u91CD\u590D\u8C03\u7528\uFF1B\u56FE\u7247\u4E0A\u9650 20MB\u3002\u4E0D\u8981\u7528\u5B83\u56DE\u7B54"\u7528\u6237\u5DF2\u7ECF\u8D34\u56FE\u7ED9\u4F60"\u7684\u573A\u666F\u2014\u2014\u90A3\u79CD\u60C5\u51B5\u4F60\u6536\u5230\u7684\u662F\u300C\u3010\u56FE\u7247\u8BC6\u522B\u3011\u300D\u5F00\u5934\u7684\u6587\u672C\uFF0C\u76F4\u63A5\u7528\u5373\u53EF\u3002',
+      parameters: {
+        type: "object",
+        properties: {
+          image_path: { type: "string", description: "\u56FE\u7247\u6587\u4EF6\u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF08png/jpg/webp/gif/bmp\uFF09" },
+          prompt: { type: "string", description: "\u53EF\u9009\uFF1A\u672C\u6B21\u8BC6\u56FE\u7684\u5177\u4F53\u6307\u4EE4\uFF0C\u8986\u76D6\u9ED8\u8BA4\u8BC6\u56FE\u63D0\u793A\u8BCD" }
+        },
+        required: ["image_path"]
+      },
+      timeoutMs: 12e4,
+      async execute(args) {
+        const file = typeof args.image_path === "string" ? args.image_path : "";
+        if (file === "") throw new Error("\u9700\u8981\u56FE\u7247\u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF08image_path\uFF09");
+        const data = await readFile(file).catch((error) => {
+          throw new Error(`\u8BFB\u4E0D\u5230\u56FE\u7247\uFF1A${file}\uFF08${String(error?.message ?? error).slice(0, 120)}\uFF09`);
+        });
+        if (data.byteLength === 0) throw new Error(`\u56FE\u7247\u6587\u4EF6\u662F\u7A7A\u7684\uFF1A${file}`);
+        if (data.byteLength > 20 * 1024 * 1024) throw new Error(`\u56FE\u7247\u592A\u5927\uFF08>20MB\uFF09\uFF1A${file}`);
+        const ignored = ignoredKeys(args, ["image_path", "prompt"]);
+        const text = await service.recognize({
+          base64: data.toString("base64"),
+          mime: mimeOf(file),
+          prompt: typeof args.prompt === "string" ? args.prompt : void 0
+        });
+        if (ignored.length === 0) return text;
+        return `${text}
+
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+      }
+    }),
+    stringTool({
+      name: "vision_guide",
+      description: "\u8FD4\u56DE\u300C\u5927\u80A5\u9C7C\u8BC6\u56FE\u300D\u7684\u5B8C\u6574\u4F7F\u7528\u6307\u5357\uFF08\u4E0E skill `dafeiyu-vision` \u540C\u4E00\u4EFD\u6B63\u6587\uFF09\uFF1A\u4EC0\u4E48\u65F6\u5019\u8BE5\u8C03 recognize_image\u3001\u5355\u4E00/\u590D\u5408\u6A21\u5F0F\u3001\u7F51\u9875\u7248\uFF08\u514D key\uFF09\u8981\u767B\u5F55\u3001\u62A5\u9519\u600E\u4E48\u8BFB\u3002\u4E0A\u4E0B\u6587\u91CC\u6CA1\u6709\u8BE5 skill \u65F6\u7528\u5B83\u515C\u5E95\u3002",
+      parameters: { type: "object", properties: {} },
+      timeoutMs: 15e3,
+      async execute() {
+        return deps.guideBody();
+      }
+    }),
+    stringTool({
+      name: "vision_web_status",
+      description: '\u67E5\u300C\u7F51\u9875\u7248\u8BC6\u56FE\uFF08\u514D key\uFF09\u300D\u7684\u767B\u5F55\u6001\uFF1A\u8C46\u5305 / Gemini \u662F\u5426\u5DF2\u767B\u5F55\u3002\u8BC6\u56FE\u62A5"\u6CA1\u6709\u767B\u5F55"\u6216\u60F3\u786E\u8BA4\u5F00\u7BB1\u72B6\u6001\u65F6\u5148\u8C03\u5B83\u3002site \u4E0D\u7ED9\u9ED8\u8BA4\u67E5\u4E24\u4E2A\uFF1B\u4F1A\u8D77\u4E00\u6B21\u65E0\u5934\u6D4F\u89C8\u5668\uFF083~8 \u79D2\uFF09\u3002',
+      parameters: {
+        type: "object",
+        properties: {
+          site: { type: "string", enum: ["doubao", "gemini", "both"], description: "\u8981\u67E5\u54EA\u4E2A\u7AD9\u70B9\uFF0C\u9ED8\u8BA4 both" }
+        }
+      },
+      timeoutMs: 9e4,
+      async execute(args) {
+        const raw = typeof args.site === "string" ? args.site : "both";
+        const sites = raw === "both" ? ["doubao", "gemini"] : raw === "doubao" || raw === "gemini" ? [raw] : [];
+        if (sites.length === 0) throw new Error("site \u53EA\u80FD\u662F doubao / gemini / both");
+        const rows = [];
+        for (const site of sites) {
+          try {
+            rows.push(await service.webStatus(site));
+          } catch (error) {
+            rows.push({ site, label: SITES[site].label, loggedIn: false, error: String(error?.message ?? error) });
+          }
+        }
+        const ignored = ignoredKeys(args, ["site"]);
+        const summary = rows.map((row) => `${row.label ?? row.site}\uFF1A${row.loggedIn === true ? "\u5DF2\u767B\u5F55" : `\u672A\u767B\u5F55${row.error ? `\uFF08${String(row.error)}\uFF09` : ""}`}`).join("\uFF1B");
+        return ignored.length === 0 ? `${summary}
+${JSON.stringify(rows)}` : `${summary}
+${JSON.stringify(rows)}
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+      }
+    }),
+    stringTool({
+      name: "vision_web_login",
+      description: "\u5728\u7528\u6237\u673A\u5668\u4E0A**\u5F39\u51FA\u4E00\u4E2A\u6709\u5934\u6D4F\u89C8\u5668\u7A97\u53E3**\uFF0C\u8BA9\u7528\u6237\u767B\u5F55\u7F51\u9875\u7248\u8C46\u5305 / Gemini\u3002\u53EA\u5728\u786E\u8BA4\u672A\u767B\u5F55\u3001\u4E14\u7528\u6237\u4EBA\u5C31\u5728\u7535\u8111\u524D\u65F6\u8C03\u7528\uFF08\u7A97\u53E3\u4F1A\u62A2\u7126\u70B9\uFF09\uFF1B\u6700\u591A\u7B49 150 \u79D2\u3002\u767B\u5F55\u6001\u5B58\u5728\u672C\u673A profile \u91CC\uFF0C\u4E4B\u540E\u957F\u671F\u6709\u6548\u3002\u522B\u8FDE\u7740\u91CD\u8BD5\u2014\u2014\u7528\u6237\u6CA1\u767B\u5B8C\u91CD\u8BD5\u4E5F\u662F\u767D\u7B49\u3002",
+      parameters: {
+        type: "object",
+        properties: {
+          site: { type: "string", enum: ["doubao", "gemini"], description: "\u8981\u767B\u5F55\u54EA\u4E2A\u7AD9\u70B9" }
+        },
+        required: ["site"]
+      },
+      timeoutMs: 24e4,
+      async execute(args) {
+        const site = typeof args.site === "string" ? args.site : "";
+        if (site !== "doubao" && site !== "gemini") throw new Error("site \u53EA\u80FD\u662F doubao / gemini");
+        const result = await service.webLogin(site, 15e4);
+        const label = SITES[site].label;
+        const ignored = ignoredKeys(args, ["site"]);
+        const tail = ignored.length === 0 ? "" : `
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+        return result.loggedIn ? `${label} \u5DF2\u767B\u5F55\uFF08\u767B\u5F55\u6001\u5B58\u5728\u672C\u673A profile\uFF0C\u4E4B\u540E\u4E0D\u7528\u518D\u767B\uFF09\u3002\u7B49\u4E86 ${Math.round(result.waitedMs / 1e3)} \u79D2\u3002${tail}` : `${label} \u8FD8\u6CA1\u767B\u4E0A\uFF1A\u7A97\u53E3\u91CC\u6CA1\u68C0\u51FA\u767B\u5F55\u6001\uFF08\u53EF\u80FD\u7528\u6237\u4E0D\u5728\u3001\u6216\u767B\u5230\u4E00\u534A\u5173\u4E86\u7A97\u53E3\uFF09\u3002\u7B49\u4E86 ${Math.round(result.waitedMs / 1e3)} \u79D2\uFF1B\u53EF\u4EE5\u518D\u8C03\u4E00\u6B21\uFF0C\u6216\u8BA9\u7528\u6237\u81EA\u5DF1\u5728\u8BBE\u7F6E\u9875\u70B9\u300C\u767B\u5F55 ${label}\u300D\u3002${tail}`;
+      }
+    })
+  ];
+}
+
+// src/vision/skill.ts
+import { cpSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import path4 from "node:path";
+var VISION_SKILL_NAME = "dafeiyu-vision";
+var SKILL_VERSION_FILE = ".dafeiyu-skill-version";
+var VISION_GUIDE_FALLBACK = [
+  "# \u5927\u80A5\u9C7C\u8BC6\u56FE",
+  "",
+  "\u8C03 `recognize_image({ image_path, prompt? })` \u628A\u672C\u5730\u56FE\u7247\u4EA4\u7ED9\u5916\u6302\u89C6\u89C9\u6A21\u578B\uFF08\u6216\u672C\u673A\u5DF2\u767B\u5F55\u7684\u7F51\u9875\u7248\u8C46\u5305/Gemini\uFF09\uFF0C",
+  "\u62FF\u56DE\u6587\u672C\u63CF\u8FF0\u540E\u57FA\u4E8E\u63CF\u8FF0\u56DE\u7B54\uFF1B\u4E0D\u8981\u58F0\u79F0\u81EA\u5DF1\u770B\u5230\u4E86\u539F\u56FE\u3002",
+  "",
+  "- `vision_web_status` \u67E5\u7F51\u9875\u7248\u767B\u5F55\u6001\uFF1B`vision_web_login` \u5F39\u7A97\u8BA9\u7528\u6237\u767B\u5F55\uFF08\u9700\u8981\u4EBA\u5728\u7535\u8111\u524D\uFF09\u3002",
+  "- \u62A5\u9519\u539F\u6587\u7167\u8F6C\u7ED9\u7528\u6237\uFF0C\u522B\u81EA\u5DF1\u731C\u539F\u56E0\uFF1B\u5B8C\u6574\u6307\u5357\u89C1 skill `dafeiyu-vision`\u3002"
+].join("\n");
+function fingerprintDir(dir) {
+  const walk = (rel) => {
+    let entries;
+    try {
+      entries = readdirSync(path4.join(dir, rel), { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const entry of [...entries].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const childRel = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) out.push(...walk(childRel));
+      else {
+        try {
+          out.push(`${childRel}:${statSync(path4.join(dir, childRel)).size}`);
+        } catch {
+          out.push(`${childRel}:?`);
+        }
+      }
+    }
+    return out;
+  };
+  return walk("").filter((line) => !line.startsWith(SKILL_VERSION_FILE)).join("|");
+}
+function listSkillFiles(base, rel = "") {
+  let entries;
+  try {
+    entries = readdirSync(path4.join(base, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const entry of [...entries].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+    const childRel = rel === "" ? entry.name : `${rel}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...listSkillFiles(base, childRel));
+    else out.push(childRel);
+  }
+  return out;
+}
+function verifySkillInstall(deps) {
+  const problems = [];
+  const files = listSkillFiles(deps.assetsRoot);
+  if (!files.includes("SKILL.md")) problems.push("\u5305\u5185\u6CA1\u6709 SKILL.md");
+  for (const rel of files) {
+    const target = path4.join(deps.targetDir, rel);
+    if (!existsSync2(target)) {
+      problems.push(`\u6CA1\u94FA\u5230\uFF1A${rel}`);
+      continue;
+    }
+    try {
+      if (!readFileSync(path4.join(deps.assetsRoot, rel)).equals(readFileSync(target))) problems.push(`\u5185\u5BB9\u4E0D\u4E00\u81F4\uFF1A${rel}`);
+    } catch (error) {
+      problems.push(`\u8BFB\u4E0D\u51FA\u6765\uFF1A${rel}\uFF08${String(error?.message ?? error).slice(0, 60)}\uFF09`);
+    }
+  }
+  return { ok: problems.length === 0, problems };
+}
+function installBundledSkills(deps) {
+  let entries;
+  try {
+    entries = readdirSync(deps.assetsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => ({ name: entry.name, dir: path4.join(deps.assetsRoot, entry.name) })).filter((entry) => existsSync2(path4.join(entry.dir, "SKILL.md")));
+  } catch (error) {
+    return { ok: false, installed: [], reason: `missing-asset: ${String(error?.message ?? error).slice(0, 80)}` };
+  }
+  if (entries.length === 0) return { ok: false, installed: [], reason: `no-skill-under: ${deps.assetsRoot}` };
+  const installed = [];
+  for (const entry of entries) {
+    const target = path4.join(deps.dshHome, "skills", entry.name);
+    const stamp = path4.join(target, SKILL_VERSION_FILE);
+    try {
+      if (existsSync2(stamp) && fingerprintDir(entry.dir) === fingerprintDir(target)) continue;
+      mkdirSync2(path4.dirname(target), { recursive: true });
+      if (existsSync2(target)) rmSync(target, { recursive: true, force: true });
+      cpSync(entry.dir, target, { recursive: true });
+      writeFileSync(stamp, `${deps.version}
+`, "utf8");
+      installed.push(entry.name);
+      const check = verifySkillInstall({ assetsRoot: entry.dir, targetDir: target });
+      if (!check.ok) {
+        deps.log(`\u5185\u7F6E skill\u300C${entry.name}\u300D\u94FA\u5B8C\u81EA\u68C0\u6CA1\u901A\u8FC7\uFF08\u5DE5\u5177\u672C\u8EAB\u7167\u5E38\u53EF\u7528\uFF0C\u6307\u5357\u53EF\u80FD\u662F\u6B8B\u7F3A\u7684\uFF09`, {
+          problems: check.problems.slice(0, 5).join("\uFF1B")
+        });
+        return { ok: false, installed, reason: `verify-failed: ${entry.name}\uFF08${check.problems[0] ?? "\u672A\u77E5"}\uFF09` };
+      }
+    } catch (error) {
+      deps.log("\u94FA skill \u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u5DE5\u5177\u672C\u8EAB\uFF09", {
+        skill: entry.name,
+        message: String(error?.message ?? error).slice(0, 120)
+      });
+      return { ok: installed.length > 0, installed, reason: `copy-failed: ${entry.name}` };
+    }
+  }
+  if (installed.length > 0) deps.log("\u5185\u7F6E skill \u5DF2\u94FA\u5F00", { skills: installed.join(","), version: deps.version });
+  return { ok: true, installed };
+}
+function stripFrontmatter(raw) {
+  return raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+}
+var cachedBody;
+function readVisionSkillBody(assetsRoot) {
+  if (cachedBody !== void 0) return cachedBody;
+  try {
+    cachedBody = stripFrontmatter(readFileSync(path4.join(assetsRoot, "SKILL.md"), "utf8"));
+  } catch {
+    cachedBody = VISION_GUIDE_FALLBACK;
+  }
+  return cachedBody;
+}
+
 // src/vision/start.ts
 var VISION_SERVICE_NAME = "dafeiyuVision";
 var GUIDANCE = [
-  "## \u8BC6\u56FE\u80FD\u529B\uFF08\u8BC6\u56FE\u5DF2\u5F00\u542F\uFF09",
-  "\u4F60\u53EF\u4EE5\u8C03\u7528 `recognize_image` \u5DE5\u5177\uFF1A\u7ED9\u4E00\u5F20\u672C\u5730\u56FE\u7247\u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u5B83\u4F1A\u628A\u56FE\u7247\u4EA4\u7ED9\u5916\u6302\u89C6\u89C9\u6A21\u578B\uFF0C\u8FD4\u56DE\u6587\u672C\u63CF\u8FF0\uFF08\u542B\u9010\u5B57\u8F6C\u5F55\uFF09\u3002\u7528\u6237\u8BF4\u300C\u770B\u770B\u8FD9\u5F20\u56FE / \u8FD9\u4E2A\u622A\u56FE\u300D\u5E76\u7ED9\u51FA\u8DEF\u5F84\u65F6\u7528\u5B83\u3002",
-  "\u7528\u6237\u5982\u679C\u628A\u56FE\u7247\u76F4\u63A5\u8D34\u8FDB\u804A\u5929\uFF0C\u4F60\u4F1A\u6536\u5230\u4E00\u6761\u4EE5\u300C\u3010\u56FE\u7247\u8BC6\u522B\u3011\u300D\u5F00\u5934\u7684\u6587\u672C\u2014\u2014\u90A3\u662F\u522B\u4EBA\u66FF\u4F60\u770B\u8FC7\u7684\u7ED3\u679C\uFF0C\u76F4\u63A5\u57FA\u4E8E\u5B83\u56DE\u7B54\uFF0C**\u4E0D\u8981\u58F0\u79F0\u4F60\u770B\u5230\u4E86\u539F\u56FE**\u3002"
+  "## \u8BC6\u56FE\u80FD\u529B",
+  "\u4F60\u53EF\u4EE5\u770B\u61C2\u56FE\uFF1A\u8C03 `recognize_image({ image_path })` \u628A\u672C\u5730\u56FE\u7247\u4EA4\u7ED9\u89C6\u89C9\u80FD\u529B\uFF0C\u8FD4\u56DE\u8BE6\u7EC6\u6587\u672C\u63CF\u8FF0\uFF08\u542B\u9010\u5B57\u8F6C\u5F55\uFF09\uFF0C\u518D\u57FA\u4E8E\u63CF\u8FF0\u56DE\u7B54\u3002",
+  "\u7528\u6237\u8BF4\u300C\u770B\u770B\u8FD9\u5F20\u56FE / \u8FD9\u4E2A\u622A\u56FE / \u8FD9\u62A5\u9519\u4EC0\u4E48\u610F\u601D\u300D\u5E76\u7ED9\u51FA\u56FE\u7247\u8DEF\u5F84\u65F6\u7528\u5B83\uFF1B\u7528\u6237\u5DF2\u7ECF\u8D34\u56FE\u7684\u8BDD\u4F60\u6536\u5230\u7684\u662F\u300C\u3010\u56FE\u7247\u8BC6\u522B\u3011\u300D\u5F00\u5934\u7684\u6587\u672C\uFF0C\u76F4\u63A5\u7528\uFF0C\u4E0D\u8981\u58F0\u79F0\u4F60\u770B\u5230\u4E86\u539F\u56FE\u3002",
+  "\u8BC6\u56FE\u8D70\u54EA\u4E00\u8DEF\uFF08API / \u7F51\u9875\u7248\u514D key / \u4E24\u8DEF\u5408\u5E76\uFF09\u7531\u8BBE\u7F6E\u9875\u51B3\u5B9A\uFF1B\u62A5\u9519\u5148\u770B\u539F\u6587\uFF0C\u5B8C\u6574\u6307\u5357\u89C1 skill `dafeiyu-vision`\uFF0C\u6216\u8C03 `vision_guide`\u3002",
+  "\u6392\u969C\u4E24\u4EF6\u5957\uFF1A`vision_web_status` \u67E5\u7F51\u9875\u7248\u767B\u5F55\u6001\uFF0C`vision_web_login` \u5F39\u7A97\u8BA9\u7528\u6237\u767B\u5F55\uFF08\u9700\u8981\u4EBA\u5728\u7535\u8111\u524D\uFF09\u3002"
 ].join("\n");
+function packageRoot() {
+  try {
+    return path5.resolve(path5.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  } catch {
+    return process.cwd();
+  }
+}
+function packageVersion() {
+  try {
+    const parsed = JSON.parse(readFileSync2(path5.join(packageRoot(), "package.json"), "utf8"));
+    return typeof parsed.version === "string" ? parsed.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 function startVision(ctx, deps) {
   const service = createVisionService(deps.dshHome, deps.log);
   const probe = {};
+  const skillAssetsRoot = path5.join(packageRoot(), "assets", "skills", VISION_SKILL_NAME);
   let web;
   let unregister;
   let started = false;
   let stopped = false;
+  let toolsRegistered = false;
+  let toolPoll;
+  try {
+    const installed = installBundledSkills({
+      dshHome: deps.dshHome,
+      assetsRoot: path5.join(packageRoot(), "assets", "skills"),
+      version: packageVersion(),
+      log: deps.log
+    });
+    probe.skills = installed.ok ? `installed(${installed.installed.length})` : `skipped: ${installed.reason ?? "unknown"}`;
+  } catch (error) {
+    probe.skills = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
+  }
+  const attachTools = (host) => {
+    if (toolsRegistered || !host || typeof host.register !== "function") return false;
+    try {
+      const definitions = buildVisionTools(service, { guideBody: () => readVisionSkillBody(skillAssetsRoot), log: deps.log });
+      for (const definition of definitions) host.register(definition);
+      toolsRegistered = true;
+      probe.tools = `registered(${definitions.length})`;
+      return true;
+    } catch (error) {
+      probe.tools = `threw: ${String(error?.message ?? error).slice(0, 120)}`;
+      return false;
+    }
+  };
+  if (!attachTools(ctx.get?.("tools", true))) {
+    probe.tools = probe.tools ?? "pending";
+    let waited = 0;
+    toolPoll = setInterval(() => {
+      waited += 500;
+      if (stopped || toolsRegistered) {
+        if (toolPoll) clearInterval(toolPoll);
+        toolPoll = void 0;
+        return;
+      }
+      if (attachTools(ctx.get?.("tools", true))) {
+        if (toolPoll) clearInterval(toolPoll);
+        toolPoll = void 0;
+        deps.log("\u8BC6\u56FE\u5DE5\u5177\u5DF2\u6CE8\u518C\uFF08tools \u670D\u52A1\u665A\u5230\uFF09", { waitedMs: waited });
+        return;
+      }
+      if (waited >= 3e4) {
+        if (toolPoll) clearInterval(toolPoll);
+        toolPoll = void 0;
+        probe.tools = "no-tools\uFF08\u7B49\u4E86 30 \u79D2\uFF09";
+        deps.log("\u6CA1\u62FF\u5230 tools \u670D\u52A1\uFF0C\u8BC6\u56FE\u5DE5\u5177\u6CA1\u6CE8\u518C\uFF08\u8BC6\u56FE\u8DEF\u7531\u4E0E\u754C\u9762\u4E0D\u53D7\u5F71\u54CD\uFF09");
+      }
+    }, 500);
+    toolPoll.unref?.();
+  }
+  try {
+    const systemPrompt = ctx.get?.("systemPrompt", true);
+    if (!service.enabled()) {
+      probe.section = "disabled";
+    } else if (systemPrompt && typeof systemPrompt.section === "function") {
+      systemPrompt.section({ name: "dafeiyu:vision", order: 10100, text: GUIDANCE });
+      probe.section = "registered";
+    } else {
+      probe.section = "no-systemPrompt";
+    }
+  } catch (error) {
+    probe.section = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
+  }
   const tryStart = () => {
     if (started || stopped || !web) return;
     started = true;
@@ -1599,36 +1937,13 @@ function startVision(ctx, deps) {
   } catch (error) {
     probe.provide = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
   }
-  if (service.enabled()) {
-    try {
-      const systemPrompt = ctx.get?.("systemPrompt", true);
-      if (systemPrompt && typeof systemPrompt.section === "function") {
-        systemPrompt.section({ name: "dafeiyu:vision", order: 10100, text: GUIDANCE });
-        probe.section = "registered";
-      } else {
-        probe.section = "no-systemPrompt";
-      }
-    } catch (error) {
-      probe.section = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
-    }
-    try {
-      const tools = ctx.get?.("tools", true);
-      if (tools && typeof tools.register === "function") {
-        tools.register(recognizeImageTool(service));
-        probe.tool = "registered";
-      } else {
-        probe.tool = "no-tools";
-      }
-    } catch (error) {
-      probe.tool = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
-    }
-  } else {
-    probe.section = "disabled";
-    probe.tool = "disabled";
-  }
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    if (toolPoll) {
+      clearInterval(toolPoll);
+      toolPoll = void 0;
+    }
     const off = unregister;
     unregister = void 0;
     try {
@@ -1642,70 +1957,27 @@ function startVision(ctx, deps) {
     stop,
     probe,
     service,
+    __attachTools: attachTools,
     get available() {
       return !stopped && started && probe.routes === "registered";
     }
   };
 }
-var MIME_BY_EXT = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  bmp: "image/bmp"
-};
-function mimeOf(file) {
-  const ext = String(file).split(".").pop()?.toLowerCase() ?? "";
-  return MIME_BY_EXT[ext] ?? "image/png";
-}
-function recognizeImageTool(service) {
-  return {
-    name: "recognize_image",
-    description: "\u628A\u4E00\u5F20\u672C\u5730\u56FE\u7247\u4EA4\u7ED9\u5916\u6302\u89C6\u89C9\u6A21\u578B\uFF0C\u8FD4\u56DE\u56FE\u7247\u5185\u5BB9\u7684\u8BE6\u7EC6\u6587\u672C\u63CF\u8FF0\uFF08\u542B\u6587\u5B57\u8F6C\u5F55\uFF09\u3002\u7528\u4E8E\u770B\u622A\u56FE\u3001\u7167\u7247\u3001\u56FE\u8868\u3001UI\u3001\u62A5\u9519\u622A\u56FE\u7B49\u3002",
-    parameters: {
-      type: "object",
-      properties: {
-        image_path: { type: "string", description: "\u56FE\u7247\u6587\u4EF6\u7684\u7EDD\u5BF9\u8DEF\u5F84" },
-        prompt: { type: "string", description: "\u53EF\u9009\uFF1A\u672C\u6B21\u8BC6\u56FE\u7684\u5177\u4F53\u6307\u4EE4\uFF0C\u8986\u76D6\u9ED8\u8BA4\u8BC6\u56FE\u63D0\u793A\u8BCD" }
-      },
-      required: ["image_path"]
-    },
-    output: {
-      schema: { type: "string" },
-      render: (_args, value) => [{ type: "text", text: String(value) }]
-    },
-    timeoutMs: 12e4,
-    async execute(args) {
-      const file = typeof args.image_path === "string" ? args.image_path : "";
-      if (file === "") throw new Error("\u9700\u8981\u56FE\u7247\u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF08image_path\uFF09");
-      const { readFile } = await import("node:fs/promises");
-      const data = await readFile(file);
-      if (data.byteLength === 0) throw new Error(`\u56FE\u7247\u6587\u4EF6\u662F\u7A7A\u7684\uFF1A${file}`);
-      if (data.byteLength > 20 * 1024 * 1024) throw new Error(`\u56FE\u7247\u592A\u5927\uFF08>20MB\uFF09\uFF1A${file}`);
-      return service.recognize({
-        base64: data.toString("base64"),
-        mime: mimeOf(file),
-        prompt: typeof args.prompt === "string" ? args.prompt : void 0
-      });
-    }
-  };
-}
 
 // src/xyq/start.ts
-import path7 from "node:path";
+import path9 from "node:path";
 
 // src/xyq/config.ts
 import fs4 from "node:fs";
-import path5 from "node:path";
+import path7 from "node:path";
 
 // src/paths.ts
-import path4 from "node:path";
+import path6 from "node:path";
 function resolveDshHome(env = process.env) {
   const explicit = (env.DSH_HOME ?? "").trim();
   if (explicit !== "") return explicit;
   const home = (env.USERPROFILE ?? env.HOME ?? "").trim();
-  return home === "" ? "" : path4.join(home, ".dsh");
+  return home === "" ? "" : path6.join(home, ".dsh");
 }
 
 // src/xyq/config.ts
@@ -1720,7 +1992,7 @@ var DEFAULTS = {
   freedom: "explicit"
 };
 function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)) {
-  return path5.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
+  return path7.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
 }
 function clampInt(value, min, max, fallback) {
   const num = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
@@ -1756,7 +2028,7 @@ function readXyqConfig(file) {
 function writeXyqConfig(file, patch) {
   const next = normalizeXyqConfig({ ...readXyqConfig(file), ...patch });
   try {
-    fs4.mkdirSync(path5.dirname(file), { recursive: true });
+    fs4.mkdirSync(path7.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
     fs4.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
 `, "utf8");
@@ -2191,8 +2463,8 @@ function xyqGenerateHandler(deps) {
       const model = typeof body.model === "string" ? body.model.trim() : "";
       if (prompt === "" || model === "") return json2(response, 400, { ok: false, error: "prompt \u4E0E model \u5FC5\u586B" });
       try {
-        const { mkdirSync: mkdirSync2 } = await import("node:fs");
-        mkdirSync2(deps.outDir, { recursive: true });
+        const { mkdirSync: mkdirSync3 } = await import("node:fs");
+        mkdirSync3(deps.outDir, { recursive: true });
       } catch {
       }
       const sessionKey = typeof body.sessionKey === "string" && body.sessionKey !== "" ? body.sessionKey : "xyq-panel";
@@ -2245,14 +2517,14 @@ function xyqFileHandler(deps) {
     const url = new URL(request.url ?? "/", "http://localhost");
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
-    const path8 = await import("node:path");
+    const path10 = await import("node:path");
     const fs6 = await import("node:fs");
-    const resolved = path8.resolve(target);
-    const root = path8.resolve(deps.outDir);
-    if (!resolved.startsWith(root + path8.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
+    const resolved = path10.resolve(target);
+    const root = path10.resolve(deps.outDir);
+    if (!resolved.startsWith(root + path10.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
       const data = fs6.readFileSync(resolved);
-      const ext = path8.extname(resolved).toLowerCase();
+      const ext = path10.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
       if (request.method === "HEAD") response.end();
@@ -2386,7 +2658,7 @@ function xyqTools(service) {
 import { spawn as spawn2 } from "node:child_process";
 import fs5 from "node:fs";
 import os2 from "node:os";
-import path6 from "node:path";
+import path8 from "node:path";
 function platformDir() {
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   if (process.platform === "win32") return `win32-${arch}`;
@@ -2397,14 +2669,14 @@ function binaryName() {
   return process.platform === "win32" ? "pippit-tool-cli.exe" : "pippit-tool-cli";
 }
 function cachedCliCandidates(home = os2.homedir()) {
-  const base = path6.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
+  const base = path8.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
   return [
-    path6.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
-    path6.join(base, "node_modules", ".bin", binaryName())
+    path8.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
+    path8.join(base, "node_modules", ".bin", binaryName())
   ];
 }
 function ensureCliScript(home = os2.homedir()) {
-  return path6.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
+  return path8.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
 }
 var defaultCliRunner = (args, options) => new Promise((resolve) => {
   const child = spawn2(cliPathForRun(args), args.slice(1), {
@@ -2466,7 +2738,7 @@ async function resolveCliPath(run, options = {}) {
   }
   const installed = await installCli(run, { home });
   if (installed !== void 0 && fs5.existsSync(installed)) {
-    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path6.basename(installed) });
+    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path8.basename(installed) });
     return installed;
   }
   return void 0;
@@ -2498,7 +2770,7 @@ function startXyq(ctx, deps) {
   let unregister;
   let started = false;
   let stopped = false;
-  const outDir = path7.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
+  const outDir = path9.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const routeDeps = { service, outDir, log: deps.log };
   const tryStart = () => {
     if (started || stopped) return;
@@ -2514,7 +2786,7 @@ function startXyq(ctx, deps) {
         [XYQ_RESULT_ROUTE, xyqResultHandler(routeDeps)],
         [XYQ_FILE_ROUTE, xyqFileHandler(routeDeps)]
       ];
-      for (const [path8, handler] of registers) disposers.push(web.register({ kind: "exact", path: path8, handler }));
+      for (const [path10, handler] of registers) disposers.push(web.register({ kind: "exact", path: path10, handler }));
       unregister = () => {
         for (const dispose of disposers.splice(0)) dispose();
       };

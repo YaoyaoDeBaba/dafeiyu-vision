@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 38 条判据
+npm test            # 构建 + 47 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -287,3 +287,42 @@ Gemini 那侧要复测的入口：`protocol: 'web-gemini'` + 设置页登录 →
 - 选择器随前端改版失效——选择器集中在 `sites.ts` 顶部，失败会报"前端可能改版"，不会回空串；
 - 偶发验证码需要人在弹出的窗口里点一下（`webHeadless=false` 或点一次「登录」）；
 - 拿个人账号跑自动化有风控风险，工具只做"像真人一样发一条消息"，请求之间默认隔 5 秒。
+
+## 八、给 agent 的接口与使用指南（0.1.6）
+
+界面只是**配置台**；真正发起识图的是 agent 调工具。四个工具（`src/vision/tools.ts`）：
+
+| 工具 | 参数 | 超时 | 用途 |
+|---|---|---|---|
+| `recognize_image` | `image_path`（必填）、`prompt`（可选，本次指令） | 120s | 识图主入口：一张本地图 → 文本描述（含逐字转录） |
+| `vision_guide` | 无 | 15s | 返回使用指南正文（与 skill **同一份真源**） |
+| `vision_web_status` | `site?: doubao \| gemini \| both` | 90s | 查网页版登录态 |
+| `vision_web_login` | `site: doubao \| gemini` | 240s | 弹有头窗口让用户登录（需人在电脑前） |
+
+三条纪律（照 `dafeiyu-plugin-dev` 契约）：
+
+1. **工具常注册**：0.1.5 之前只在启动时 `enabled` 才注册，导致"设置页打开开关后还得重启"。
+   现在四个工具一直注册，开关由**调用时**实时判断（`recognize_image` 直接报"识图未开启"）；
+2. **`tools` 是晚到服务**：`apply` 期间可能取不到，`start.ts` 每 500ms 轮询一次、最多 30 秒，
+   拿到就注册（probe 写 `registered(4)`）；30 秒还没有就写 `no-tools（等了 30 秒）` 并记日志；
+3. **参数显形**：认不出的参数键会附在结果末尾（`（忽略未知参数：x）`），不静默吞掉。
+
+### 8.1 内置 skill（指南唯一真源）
+
+```
+assets/skills/dafeiyu-vision/
+├── SKILL.md                       # 正文：什么时候调、四个工具、模式差别、报错怎么读
+└── references/
+    ├── web-mode.md                # 网页版怎么驱动、为什么必须登录、profile 在哪
+    └── troubleshooting.md         # 按报错原文排障
+```
+
+启动时铺到 `<DSH_HOME>/skills/dafeiyu-vision/`（`src/vision/skill.ts`）：
+
+- 幂等判据是**内容指纹**（`<相对路径>:<字节数>`），不是版本号 ⇒ 改个错别字不用发版；
+- 重铺是整份替换，避免"SKILL.md 新的、references 旧的"；
+- 铺完**逐文件比字节**自检，半份 skill 会写清哪个文件没铺到（否则模型照着残缺指南干活）；
+- `vision_guide` 工具读的就是这份 `SKILL.md`（去掉 frontmatter），读不到才退回内置短版
+  —— 两份文案必漂，所以只有一份真源。
+
+`package.json` 的 `files` 已加 `assets`：**别把它删了**，删了装到用户机器上就没有指南了。

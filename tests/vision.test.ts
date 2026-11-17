@@ -282,7 +282,7 @@ test('路由：识图 POST 走桩 fetch；缺图 400；上游 502', async () => 
   }
 })
 
-test('接线：startVision 挂路由；关着时不塞提示词段，打开后才注册段与工具', () => {
+test('接线：startVision 挂路由；工具常注册（开关只管提示词段与调用期判断）', () => {
   const home = mkdtempSync(path.join(tmpdir(), 'dafeiyu-vision-start-'))
   try {
     const makeCtx = () => {
@@ -312,7 +312,15 @@ test('接线：startVision 挂路由；关着时不塞提示词段，打开后�
     const disabled = startVision(off.ctx as never, { dshHome: home, log: () => {} })
     assert.ok(off.routes.some((route) => route.path === VISION_CONFIG_ROUTE), '识图路由要挂上')
     assert.equal(disabled.probe.section, 'disabled')
-    assert.equal(off.tools.length, 0, '没开启就别注册工具')
+    /*
+     * 0.1.6 起工具**一直注册**：以前"没开启就不注册"会导致设置页打开开关后还得重启。
+     * 开关是否生效交给调用时判断（recognize_image 会报"识图未开启"）。
+     */
+    assert.deepEqual(
+      off.tools.map((tool) => tool.name).sort(),
+      ['recognize_image', 'vision_guide', 'vision_web_login', 'vision_web_status'],
+    )
+    assert.match(disabled.probe.tools ?? '', /registered\(4\)/)
     disabled.stop()
 
     const service = createVisionService(home)

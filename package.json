@@ -1,6 +1,6 @@
 {
   "name": "dsh-vision-dafeiyu",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "大肥鱼-识图 + 小云雀（独立插件）：外挂视觉模型的配置/识图路由与工具、小云雀 CLI 的生图/生视频工具，以及设置页「肥鱼识图」「小云雀」两个分栏。路由前缀与存储目录与大肥鱼本体完全一致（零迁移）。",
   "type": "module",
   "license": "MIT",
@@ -12,6 +12,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "assets",
     "dist/bundle",
     "cordis.patch.yml"
   ],
@@ -31,6 +32,7 @@
   "engines": {
     "node": ">=20"
   },
+  "//engines": "网页版识图那部分用宿主全局 WebSocket，要求 Node >= 22（见 README 7.x）；其余功能 >= 20 即可。",
   "scripts": {
     "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.client.json",
