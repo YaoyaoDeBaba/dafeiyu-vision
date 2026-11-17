@@ -74,7 +74,10 @@ var DEFAULT_VISION_CONFIG = {
   requestTemplate: "",
   responsePath: "",
   webHeadless: true,
-  webProject: ""
+  webProject: "",
+  freeDoubao: false,
+  webSite: "doubao",
+  mode: "single"
 };
 function redactKey(key) {
   const value = String(key ?? "");
@@ -94,6 +97,9 @@ function toView(config) {
     responsePath: config.responsePath,
     webHeadless: config.webHeadless,
     webProject: config.webProject,
+    freeDoubao: config.freeDoubao,
+    webSite: config.webSite,
+    mode: config.mode,
     apiKeySet: config.apiKey !== "",
     apiKeyHint: redactKey(config.apiKey)
   };
@@ -115,7 +121,14 @@ function cleanString(value, fallback, max) {
 }
 function normalizeVisionConfig(input, base = DEFAULT_VISION_CONFIG) {
   const raw = input && typeof input === "object" ? input : {};
-  const protocol = typeof raw.protocol === "string" && PROTOCOLS.includes(raw.protocol) ? raw.protocol : base.protocol;
+  let protocol = typeof raw.protocol === "string" && PROTOCOLS.includes(raw.protocol) ? raw.protocol : base.protocol;
+  let freeDoubao = typeof raw.freeDoubao === "boolean" ? raw.freeDoubao : base.freeDoubao;
+  let webSite = raw.webSite === "gemini" || raw.webSite === "doubao" ? raw.webSite : base.webSite;
+  if (isWebProtocol(protocol)) {
+    freeDoubao = true;
+    webSite = webSiteOf(protocol);
+    protocol = "auto";
+  }
   const timeout = typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs) ? Math.min(Math.max(Math.round(raw.timeoutMs), 5e3), 3e5) : base.timeoutMs;
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : base.enabled,
@@ -128,8 +141,15 @@ function normalizeVisionConfig(input, base = DEFAULT_VISION_CONFIG) {
     requestTemplate: cleanString(raw.requestTemplate, base.requestTemplate, 8e3),
     responsePath: cleanString(raw.responsePath, base.responsePath, 200),
     webHeadless: typeof raw.webHeadless === "boolean" ? raw.webHeadless : base.webHeadless,
-    webProject: cleanString(raw.webProject, base.webProject, 100)
+    webProject: cleanString(raw.webProject, base.webProject, 100),
+    freeDoubao,
+    webSite,
+    mode: raw.mode === "composite" ? "composite" : raw.mode === "single" ? "single" : base.mode
   };
+}
+function planRecognition(config) {
+  if (!config.freeDoubao) return { webSite: null, api: true };
+  return { webSite: config.webSite, api: config.mode === "composite" };
 }
 function detectProtocol(apiBase) {
   const lower = String(apiBase ?? "").toLowerCase();
@@ -1295,18 +1315,75 @@ function assertUsable(config, image) {
 }
 async function recognizeViaBrowser(config, image, dshHome, log) {
   assertUsable(config, image);
-  const protocol = resolveProtocol(config);
-  if (!isWebProtocol(protocol)) throw new VisionError("\u5F53\u524D\u534F\u8BAE\u4E0D\u662F\u7F51\u9875\u7248", 0);
-  const site = webSiteOf(protocol);
   const prompt = typeof image.prompt === "string" && image.prompt.trim() !== "" ? image.prompt.trim() : config.prompt;
   const result = await recognizeViaWeb(
-    site,
+    config.webSite,
     { base64: image.base64, mime: image.mime, prompt, timeoutMs: config.timeoutMs },
     { dshHome, headless: config.webHeadless, project: config.webProject, log }
   );
   return result.truncated ? `${result.text}
 
 \uFF08\u7F51\u9875\u7248\u751F\u6210\u8D85\u65F6\u88AB\u622A\u65AD\uFF1A\u4EE5\u4E0A\u662F\u5DF2\u751F\u6210\u7684\u90E8\u5206\uFF0C\u53EF\u52A0\u5927\u8D85\u65F6\u6216\u91CD\u8BD5\uFF09` : result.text;
+}
+function composeRecognition(branches) {
+  const ok = branches.filter((b) => b.result.ok && (b.result.text ?? "").trim() !== "");
+  const failed = branches.filter((b) => !(b.result.ok && (b.result.text ?? "").trim() !== ""));
+  if (ok.length === 0) {
+    const reasons = failed.map((b) => `${b.label}=${b.result.error ?? "\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9"}`).join("\uFF1B");
+    throw new VisionError(`\u8BC6\u56FE\u4E24\u8DEF\u90FD\u5931\u8D25\u4E86\uFF1A${reasons || "\u539F\u56E0\u4E0D\u660E"}`, 0);
+  }
+  const body = ok.length === 1 ? (ok[0]?.result.text ?? "").trim() : ok.map((b) => `\u3010${b.label}\u3011
+${(b.result.text ?? "").trim()}`).join("\n\n");
+  if (failed.length === 0) return body;
+  const note = failed.map((b) => `${b.label} \u5931\u8D25\uFF1A${b.result.error ?? "\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9"}`).join("\uFF1B");
+  return `${body}
+
+\uFF08\u53E6\u4E00\u8DEF\u6CA1\u6210\uFF0C\u5DF2\u5FFD\u7565\uFF1A${note}\uFF09`;
+}
+async function runRecognition(config, image, deps) {
+  assertUsable(config, image);
+  const plan = planRecognition(config);
+  const webImpl = deps.webRecognize ?? recognizeViaBrowser;
+  const fail = (error) => {
+    const asVision = error;
+    return {
+      ok: false,
+      error: String(asVision?.message ?? error),
+      status: typeof asVision?.status === "number" ? asVision.status : 0
+    };
+  };
+  const webRun = async () => {
+    try {
+      return { ok: true, text: await webImpl(config, image, deps.dshHome, deps.log) };
+    } catch (error) {
+      return fail(error);
+    }
+  };
+  const apiRun = async () => {
+    try {
+      return { ok: true, text: await recognize(config, image) };
+    } catch (error) {
+      return fail(error);
+    }
+  };
+  const webLabel = `\u7F51\u9875\u7248${config.webSite === "gemini" ? " Gemini" : "\u8C46\u5305"}`;
+  const apiLabel = `\u5916\u6302\u6A21\u578B${config.model === "" ? "" : `\uFF08${config.model}\uFF09`}`;
+  if (plan.webSite && plan.api) {
+    const [web, api2] = await Promise.all([webRun(), apiRun()]);
+    deps.log?.("\u8BC6\u56FE\u590D\u5408\u6A21\u5F0F\u5B8C\u6210", { web: web.ok, api: api2.ok });
+    return composeRecognition([
+      { label: webLabel, result: web },
+      { label: apiLabel, result: api2 }
+    ]);
+  }
+  if (plan.webSite) {
+    const web = await webRun();
+    if (!web.ok) throw new VisionError(web.error ?? "\u7F51\u9875\u7248\u8BC6\u56FE\u5931\u8D25", web.status ?? 0);
+    return composeRecognition([{ label: webLabel, result: web }]);
+  }
+  const api = await apiRun();
+  if (!api.ok) throw new VisionError(api.error ?? "\u5916\u6302\u6A21\u578B\u8BC6\u56FE\u5931\u8D25", api.status ?? 0);
+  return composeRecognition([{ label: apiLabel, result: api }]);
 }
 function visionDir(dshHome) {
   return path3.join(dshHome, "storages", "dsh-remote-dafeiyu");
@@ -1395,7 +1472,7 @@ async function listModels(config) {
     throw new VisionError(`\u6A21\u578B\u5217\u8868\u89E3\u6790\u5931\u8D25\uFF1A${errorSnippet(raw)}`, response.status);
   }
 }
-function createVisionService(dshHome, log) {
+function createVisionService(dshHome, log, deps) {
   const dir = visionDir(dshHome);
   const configFile = visionConfigFile(dshHome);
   let config = readVisionConfig(configFile);
@@ -1413,18 +1490,20 @@ function createVisionService(dshHome, log) {
       return { ok: true, config: toView(config) };
     },
     enabled: () => config.enabled,
-    recognize: (image) => isWebProtocol(resolveProtocol(config)) ? recognizeViaBrowser(config, image, dshHome, log) : recognize(config, image),
+    recognize: (image) => runRecognition(config, image, { dshHome, log, webRecognize: deps?.webRecognize }),
     listModels: () => listModels(config),
     webStatus: (site) => webStatus(site, { dshHome, headless: config.webHeadless, log }),
     webLogin: (site, waitMs) => loginSite(site, { dshHome, headless: false, waitMs, log }),
     dispose: () => closeAll(log),
     describe: () => {
-      const protocol = resolveProtocol(config);
+      const plan = planRecognition(config);
       return {
         enabled: config.enabled,
-        protocol,
-        webSite: isWebProtocol(protocol) ? webSiteOf(protocol) : null,
-        configured: isWebProtocol(protocol) ? true : config.apiKey !== "",
+        protocol: resolveProtocol(config),
+        freeDoubao: config.freeDoubao,
+        mode: config.mode,
+        webSite: plan.webSite,
+        configured: plan.webSite !== null || config.apiKey !== "",
         apiKeyHint: redactKey(config.apiKey),
         model: config.model
       };

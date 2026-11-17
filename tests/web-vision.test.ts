@@ -12,12 +12,12 @@ import path from 'node:path'
 import { test } from 'node:test'
 import {
   DEFAULT_VISION_CONFIG,
-  isWebProtocol,
   normalizeVisionConfig,
-  resolveProtocol,
+  planRecognition,
   webSiteOf,
 } from '../src/vision/config.js'
 import { VisionError } from '../src/vision/protocols.js'
+import { composeRecognition, runRecognition } from '../src/vision/service.js'
 import {
   VISION_RECOGNIZE_ROUTE,
   VISION_WEB_LOGIN_ROUTE,
@@ -135,12 +135,13 @@ const IMAGE = { base64: Buffer.from('fake-png-bytes').toString('base64'), mime: 
 
 // ── 配置面 ──────────────────────────────────────────────────────────────────
 
-test('配置：网页版协议被接受，且不吃 key', () => {
+test('配置：网页版字段被接受，且不吃 key', () => {
   const config = normalizeVisionConfig({ protocol: 'web-doubao', webHeadless: false })
-  assert.equal(config.protocol, 'web-doubao')
+  // 旧写法（protocol 里带 web-*）被迁移成「白嫖豆包 + 站点」，协议本身回到 auto
+  assert.equal(config.freeDoubao, true)
+  assert.equal(config.webSite, 'doubao')
+  assert.equal(config.protocol, 'auto')
   assert.equal(config.webHeadless, false)
-  assert.equal(isWebProtocol(resolveProtocol(config)), true)
-  assert.equal(webSiteOf('web-gemini'), 'gemini')
 
   // 默认无头；脏值回落
   assert.equal(normalizeVisionConfig({}).webHeadless, DEFAULT_VISION_CONFIG.webHeadless)
@@ -158,6 +159,139 @@ test('配置：等回答的预算有下限（配 10 秒也给 15 秒）', () => 
   assert.equal(answerBudgetMs(10_000), 15_000)
   assert.equal(answerBudgetMs(60_000), 60_000)
   assert.equal(answerBudgetMs(Number.NaN), 15_000)
+})
+
+test('配置：白嫖豆包 / 站点 / 模式 都能规整', () => {
+  const config = normalizeVisionConfig({ freeDoubao: true, webSite: 'gemini', mode: 'composite', webHeadless: false, webProject: '  甲鱼乙豆  ' })
+  assert.equal(config.freeDoubao, true)
+  assert.equal(config.webSite, 'gemini')
+  assert.equal(config.mode, 'composite')
+  assert.equal(config.webHeadless, false)
+  assert.equal(config.webProject, '甲鱼乙豆')
+
+  // 默认：不白嫖、站点豆包、单一模式；脏值回落
+  assert.equal(normalizeVisionConfig({}).freeDoubao, false)
+  assert.equal(normalizeVisionConfig({}).webSite, 'doubao')
+  assert.equal(normalizeVisionConfig({}).mode, 'single')
+  assert.equal(normalizeVisionConfig({ webSite: 'nope' }).webSite, 'doubao')
+  assert.equal(normalizeVisionConfig({ mode: 'both' }).mode, 'single')
+
+  // 旧配置迁移：protocol 里的 web-* 挪到 freeDoubao + webSite，protocol 回到 auto
+  const legacy = normalizeVisionConfig({ protocol: 'web-gemini' })
+  assert.equal(legacy.freeDoubao, true)
+  assert.equal(legacy.webSite, 'gemini')
+  assert.equal(legacy.protocol, 'auto')
+  assert.equal(normalizeVisionConfig({ protocol: 'web-doubao' }).webSite, 'doubao')
+  // webSiteOf 仍然可用（旧协议 → 站点）
+  assert.equal(webSiteOf('web-gemini'), 'gemini')
+})
+
+test('计划：单一/复合 决定跑哪几路', () => {
+  const single = planRecognition({ ...DEFAULT_VISION_CONFIG, freeDoubao: false })
+  assert.deepEqual(single, { webSite: null, api: true })
+
+  const webOnly = planRecognition({ ...DEFAULT_VISION_CONFIG, freeDoubao: true, mode: 'single' })
+  assert.deepEqual(webOnly, { webSite: 'doubao', api: false })
+
+  const both = planRecognition({ ...DEFAULT_VISION_CONFIG, freeDoubao: true, mode: 'composite' })
+  assert.deepEqual(both, { webSite: 'doubao', api: true })
+
+  const geminiBoth = planRecognition({ ...DEFAULT_VISION_CONFIG, freeDoubao: true, webSite: 'gemini', mode: 'composite' })
+  assert.deepEqual(geminiBoth, { webSite: 'gemini', api: true })
+})
+
+test('合并：两路都成 ⇒ 带来源标注；一路成 ⇒ 附失败原因；全败 ⇒ 抛错', () => {
+  const both = composeRecognition([
+    { label: '网页版豆包', result: { ok: true, text: '网页描述' } },
+    { label: '外挂模型（m1）', result: { ok: true, text: 'API 描述' } },
+  ])
+  assert.match(both, /【网页版豆包】/)
+  assert.match(both, /【外挂模型（m1）】/)
+  assert.ok(both.indexOf('网页描述') < both.indexOf('API 描述'))
+
+  const oneWeb = composeRecognition([
+    { label: '网页版豆包', result: { ok: true, text: '网页描述' } },
+    { label: '外挂模型（m1）', result: { ok: false, error: '缺 key' } },
+  ])
+  assert.match(oneWeb, /^网页描述/)
+  assert.match(oneWeb, /另一路没成.*缺 key/)
+
+  const oneApi = composeRecognition([
+    { label: '网页版豆包', result: { ok: false, error: '没登录' } },
+    { label: '外挂模型（m1）', result: { ok: true, text: 'API 描述' } },
+  ])
+  assert.match(oneApi, /^API 描述/)
+  assert.match(oneApi, /没登录/)
+
+  assert.throws(
+    () => composeRecognition([
+      { label: '网页版豆包', result: { ok: false, error: '没登录' } },
+      { label: '外挂模型（m1）', result: { ok: false, error: '缺 key' } },
+    ]),
+    (error: unknown) => error instanceof VisionError && /两路都失败/.test(error.message) && /没登录/.test(error.message) && /缺 key/.test(error.message),
+  )
+})
+
+test('复合：两路并行都跑，结果按来源合并（网页桩 + fetch 桩）', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: 'API 描述' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    const config = normalizeVisionConfig({
+      enabled: true,
+      freeDoubao: true,
+      mode: 'composite',
+      apiKey: 'sk-test',
+      apiBase: 'https://api.openai.com/v1',
+      model: 'm1',
+      protocol: 'openai-chat',
+    })
+    let webCalls = 0
+    const text = await runRecognition(
+      config,
+      { base64: Buffer.from('fake').toString('base64'), mime: 'image/png' },
+      { dshHome: tmpdir(), webRecognize: async () => { webCalls += 1; return '网页描述' } },
+    )
+    assert.equal(webCalls, 1)
+    assert.match(text, /【网页版豆包】/)
+    assert.match(text, /【外挂模型（m1）】/)
+    assert.ok(text.indexOf('网页描述') < text.indexOf('API 描述'))
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('复合：API 那路没有 key ⇒ 网页版结果照用，并注明另一路失败', async () => {
+  const config = normalizeVisionConfig({ enabled: true, freeDoubao: true, mode: 'composite' })
+  const text = await runRecognition(
+    config,
+    { base64: Buffer.from('fake').toString('base64'), mime: 'image/png' },
+    { dshHome: tmpdir(), webRecognize: async () => '网页描述' },
+  )
+  assert.match(text, /^网页描述/)
+  assert.match(text, /另一路没成/)
+  assert.match(text, /API Key/i)
+})
+
+test('单一 + 白嫖豆包 ⇒ 只走网页版，一次都不碰 API', async () => {
+  const original = globalThis.fetch
+  let fetchCalls = 0
+  globalThis.fetch = (async () => { fetchCalls += 1; throw new Error('不该被调用') }) as typeof fetch
+  try {
+    const config = normalizeVisionConfig({ enabled: true, freeDoubao: true, mode: 'single', apiKey: 'sk-test' })
+    const text = await runRecognition(
+      config,
+      { base64: Buffer.from('fake').toString('base64'), mime: 'image/png' },
+      { dshHome: tmpdir(), webRecognize: async () => '网页描述' },
+    )
+    assert.equal(text.trim(), '网页描述')
+    assert.equal(fetchCalls, 0)
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('落盘：临时图片按 mime 取扩展名、内容是真的 base64 解出来的', () => {

@@ -58,16 +58,36 @@ export interface VisionConfig {
   /** 仅 `custom`：从响应 JSON 取文本的点号路径，如 `choices.0.message.content`。 */
   responsePath: string
   /**
-   * 仅网页版协议：识图时用不用无头浏览器。
+   * 仅网页版（免 key）：识图时用不用无头浏览器。
    * 默认 true。个别网络/风控环境下网页版会要求有头窗口，那时改成 false（会弹出真窗口）。
    */
   webHeadless: boolean
   /**
-   * 仅网页版协议：在哪个「项目」里发起会话（豆包有项目功能，留空=不指定）。
+   * 仅网页版：在哪个「项目」里发起会话（豆包有项目功能，留空=不指定）。
    * 目的：让识图会话自动归到某个项目下，不污染「最近」列表。
    */
   webProject: string
+  /**
+   * 「白嫖豆包」：打开后识图走**本机浏览器里已登录的网页版**，不需要 API Key。
+   *
+   * 这是设置页的主开关（0.1.5 起）；`protocol` 只负责 API 那一路。
+   * 兼容旧配置：`protocol` 是 `web-*` 的会被规整成 `freeDoubao: true` + 对应 `webSite`。
+   */
+  freeDoubao: boolean
+  /** 网页版走哪个站点（默认豆包；Gemini 目前站点侧不稳定）。 */
+  webSite: WebSiteKey
+  /**
+   * 识图模式：
+   * - `single`：只用一路（白嫖开着就是网页版，关着就是 API）；
+   * - `composite`：网页版与 API **都跑**，两边结果合并（一路失败不影响另一路）。
+   */
+  mode: VisionMode
 }
+
+/** 网页版站点。 */
+export type WebSiteKey = 'doubao' | 'gemini'
+/** 识图模式。 */
+export type VisionMode = 'single' | 'composite'
 
 export const DEFAULT_VISION_PROMPT =
   '你是一名专业的图像识别助手。请仔细观察用户提供的图片，用中文给出详细、结构化的描述：' +
@@ -87,6 +107,9 @@ export const DEFAULT_VISION_CONFIG: VisionConfig = {
   responsePath: '',
   webHeadless: true,
   webProject: '',
+  freeDoubao: false,
+  webSite: 'doubao',
+  mode: 'single',
 }
 
 /** 设置页看到的配置：key 打码。 */
@@ -115,6 +138,9 @@ export function toView(config: VisionConfig): VisionConfigView {
     responsePath: config.responsePath,
     webHeadless: config.webHeadless,
     webProject: config.webProject,
+    freeDoubao: config.freeDoubao,
+    webSite: config.webSite,
+    mode: config.mode,
     apiKeySet: config.apiKey !== '',
     apiKeyHint: redactKey(config.apiKey),
   }
@@ -140,9 +166,19 @@ function cleanString(value: unknown, fallback: string, max: number): string {
 /** 把设置页/配置文件来的脏对象规整成合法配置。**不抛**：坏值各自回落默认。 */
 export function normalizeVisionConfig(input: unknown, base: VisionConfig = DEFAULT_VISION_CONFIG): VisionConfig {
   const raw = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
-  const protocol = typeof raw.protocol === 'string' && (PROTOCOLS as readonly string[]).includes(raw.protocol)
+  let protocol = typeof raw.protocol === 'string' && (PROTOCOLS as readonly string[]).includes(raw.protocol)
     ? (raw.protocol as VisionProtocol)
     : base.protocol
+  let freeDoubao = typeof raw.freeDoubao === 'boolean' ? raw.freeDoubao : base.freeDoubao
+  let webSite: WebSiteKey = raw.webSite === 'gemini' || raw.webSite === 'doubao' ? raw.webSite : base.webSite
+
+  // 旧配置迁移（0.1.3/0.1.4 把「网页版」写在 protocol 里）：挪到 freeDoubao + webSite，protocol 回到 auto
+  if (isWebProtocol(protocol)) {
+    freeDoubao = true
+    webSite = webSiteOf(protocol)
+    protocol = 'auto'
+  }
+
   const timeout = typeof raw.timeoutMs === 'number' && Number.isFinite(raw.timeoutMs)
     ? Math.min(Math.max(Math.round(raw.timeoutMs), 5_000), 300_000)
     : base.timeoutMs
@@ -158,7 +194,22 @@ export function normalizeVisionConfig(input: unknown, base: VisionConfig = DEFAU
     responsePath: cleanString(raw.responsePath, base.responsePath, 200),
     webHeadless: typeof raw.webHeadless === 'boolean' ? raw.webHeadless : base.webHeadless,
     webProject: cleanString(raw.webProject, base.webProject, 100),
+    freeDoubao,
+    webSite,
+    mode: raw.mode === 'composite' ? 'composite' : raw.mode === 'single' ? 'single' : base.mode,
   }
+}
+
+/**
+ * 这次识图要跑哪几路。
+ *
+ * - 白嫖关着 → 只跑 API；
+ * - 白嫖开着 + 单一 → 只跑网页版；
+ * - 白嫖开着 + 复合 → 两路都跑（**网页版与 API 并行**，各自独立，一路失败不影响另一路）。
+ */
+export function planRecognition(config: VisionConfig): { webSite: WebSiteKey | null; api: boolean } {
+  if (!config.freeDoubao) return { webSite: null, api: true }
+  return { webSite: config.webSite, api: config.mode === 'composite' }
 }
 
 // ── 按 apiBase 猜协议（与 dsh-vision 同一套判据；网页版协议不参与猜）────────

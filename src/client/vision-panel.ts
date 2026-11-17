@@ -45,6 +45,12 @@ export interface VisionConfigView {
   webHeadless?: boolean
   /** 仅网页版协议：在哪个「项目」里发起会话（豆包有项目功能，留空=不指定）。 */
   webProject?: string
+  /** 「白嫖豆包」：走本机浏览器已登录的网页版，免 key。 */
+  freeDoubao?: boolean
+  /** 网页版站点：豆包 / Gemini。 */
+  webSite?: string
+  /** 识图模式：single（只一路）/ composite（两路都跑、合并）。 */
+  mode?: string
 }
 
 export interface VisionPanelDeps {
@@ -69,14 +75,18 @@ const PROTOCOLS: Array<[string, string]> = [
   ['anthropic', 'Anthropic（/v1/messages）'],
   ['gemini', 'Gemini（generateContent）'],
   ['custom', '自定义模板'],
-  ['web-doubao', '网页版豆包（免 key，需登录）'],
-  ['web-gemini', '网页版 Gemini（免 key，需登录）'],
 ]
 
-/** 是不是「走浏览器」的协议（免 key 那一类）。 */
+/** 是不是「走浏览器」那一类（0.1.5 起由「白嫖豆包」开关驱动，不再写在协议里）。 */
 export function isWebProtocolId(protocol: unknown): boolean {
   return protocol === 'web-doubao' || protocol === 'web-gemini'
 }
+
+/** 识图模式的两个人话标签（下拉与状态卡共用）。 */
+export const MODE_LABELS: Array<[string, string]> = [
+  ['single', '单一（只用一路）'],
+  ['composite', '复合（网页 + API 都跑，合并结果）'],
+]
 
 /**
  * 协议 id → 人话。**状态卡与配置下拉共用这一份**（两处各写一份必然漂）。
@@ -147,6 +157,9 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
           responsePath: cfg.responsePath,
           webHeadless: cfg.webHeadless !== false,
           webProject: cfg.webProject ?? '',
+          freeDoubao: cfg.freeDoubao === true,
+          webSite: cfg.webSite === 'gemini' ? 'gemini' : 'doubao',
+          mode: cfg.mode === 'composite' ? 'composite' : 'single',
         }
         // 空串 = 不改 key（密码框不显示已存的值）
         if (apiKey.trim() !== '') payload.apiKey = apiKey.trim()
@@ -219,7 +232,68 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
           ] }),
         ] }),
         h('p', { style: hintStyle, children: '大肥鱼没有视觉，需要外挂一个视觉模型（OpenAI / Anthropic / Gemini 兼容接口都行）。填好后在聊天页右下角点鲸鱼按钮发图。' }),
-        isWebProtocolId(cfg.protocol)
+        /* ── 白嫖豆包（免 key）────────────────────────────────────────── */
+        h('div', {
+          style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+          children: [
+            h('label', {
+              style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600 },
+              children: [
+                h('input', {
+                  type: 'checkbox',
+                  checked: cfg.freeDoubao === true,
+                  style: { accentColor: 'var(--dsw-alias-brand-primary, #247bbf)' },
+                  onChange: (event: Event) => patch({ freeDoubao: (event.target as HTMLInputElement).checked }),
+                }),
+                '白嫖豆包',
+              ],
+            }),
+            h('select', {
+              style: { ...fieldStyle, width: 'auto' },
+              value: cfg.webSite === 'gemini' ? 'gemini' : 'doubao',
+              onChange: (event: Event) => patch({ webSite: (event.target as HTMLSelectElement).value }),
+              children: [
+                h('option', { key: 'doubao', value: 'doubao', children: '网页版豆包' }),
+                h('option', { key: 'gemini', value: 'gemini', children: '网页版 Gemini（实验）' }),
+              ],
+            }),
+            h('span', {
+              style: hintStyle,
+              children: cfg.freeDoubao === true
+                ? '开着：识图走本机浏览器里已登录的网页版，不花 API key（先在下面「网页版（免 key）」里登录一次）。'
+                : '关着：只走外挂模型（要 key）。打开它就不用配 key 了。',
+            }),
+          ],
+        }),
+        /* ── 识图模式：单一 / 复合 ─────────────────────────────────────── */
+        h('div', {
+          style: { display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' },
+          children: [
+            h('span', { style: { fontSize: '13px', fontWeight: 600 }, children: '识图模式' }),
+            ...MODE_LABELS.map(([value, label]) =>
+              h('label', {
+                key: value,
+                style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' },
+                children: [
+                  h('input', {
+                    type: 'radio',
+                    name: 'dafeiyu-vision-mode',
+                    checked: (cfg.mode === 'composite' ? 'composite' : 'single') === value,
+                    onChange: () => patch({ mode: value }),
+                  }),
+                  label,
+                ],
+              }),
+            ),
+          ],
+        }),
+        cfg.mode === 'composite'
+          ? h('p', { style: hintStyle, children: '复合模式：网页版与外挂模型**并行各跑一遍**，结果按来源合并输出；一路失败不影响另一路（失败原因会附在末尾）。' })
+          : null,
+        cfg.freeDoubao === true && cfg.mode === 'composite'
+          ? h('p', { style: hintStyle, children: '提示：复合模式要两路都可用——网页版要登录过，外挂模型要填好 key（下面那块），缺哪一路就只用另一路。' })
+          : null,
+        cfg.freeDoubao === true
           ? h('p', { style: hintStyle, children: '网页版模式不用填接口地址和密钥：它拿本机浏览器里已登录的网页版去识图。先去下面「网页版登录」里登一次。' })
           : null,
         h('div', { style: colsStyle, children: [
@@ -228,7 +302,7 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
           fieldGroup('模型名', h('input', { style: fieldStyle, value: cfg.model, placeholder: 'gpt-4o-mini / qwen-vl-max / claude-…', onChange: (event: Event) => patch({ model: (event.target as HTMLInputElement).value }) })),
           fieldGroup('协议', h('select', { style: fieldStyle, value: cfg.protocol, onChange: (event: Event) => patch({ protocol: (event.target as HTMLSelectElement).value }), children: PROTOCOLS.map(([value, label]) => h('option', { key: value, value, children: label })) })),
         ] }),
-        isWebProtocolId(cfg.protocol)
+        cfg.freeDoubao === true
           ? h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }, children: [
               h('input', {
                 type: 'checkbox',
@@ -239,7 +313,7 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
               '识图时弹出浏览器窗口（默认无头；被风控挡住时才需要勾上）',
             ] })
           : null,
-        isWebProtocolId(cfg.protocol)
+        cfg.freeDoubao === true
           ? fieldGroup('项目（豆包有项目功能；留空 = 不指定，会话进「最近」）', h('input', {
               style: fieldStyle,
               value: cfg.webProject ?? '',

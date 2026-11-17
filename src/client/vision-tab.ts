@@ -141,12 +141,19 @@ export function buildVisionTab(deps: VisionTabDeps): (() => unknown) | undefined
       ])
     }
 
-    const ready = cfg.enabled === true && cfg.apiKeySet === true
+    const web = cfg.freeDoubao === true
+    const composite = cfg.mode === 'composite'
+    const ready = web ? composite ? cfg.apiKeySet === true : true : cfg.apiKeySet === true
     const tone: TagTone = cfg.enabled !== true ? 'off' : ready ? 'ok' : 'warn'
-    const readyText = cfg.enabled !== true ? '未开启' : ready ? '已就绪' : '缺密钥'
+    const readyText = cfg.enabled !== true
+      ? '未开启'
+      : web
+        ? (composite ? (ready ? '白嫖 + API（复合）' : '复合：缺 API key') : '白嫖豆包')
+        : ready ? '已就绪' : '缺密钥'
     const rows: unknown[] = [
-      kv(h, '外挂视觉模型', tag(h, readyText, tone)),
-      kv(h, '模型名', cfg.model === '' ? '（没填）' : cfg.model),
+      kv(h, '识图来源', tag(h, readyText, tone)),
+      kv(h, '识图模式', composite ? '复合（网页 + API 合并）' : '单一（只走一路）'),
+      kv(h, '外挂视觉模型', cfg.model === '' ? '（没填）' : cfg.model),
       kv(h, '协议', protocolLabel(cfg.protocol)),
     ]
     // 宿主没记过"最近一次"（见文件头）⇒ 这一行**不画**，不写假话。
@@ -162,9 +169,13 @@ export function buildVisionTab(deps: VisionTabDeps): (() => unknown) | undefined
       kvGrid(h, rows),
       h('p', {
         style: hintStyle,
-        children: cfg.enabled === true
-          ? '聊天页右下角那颗鲸鱼按钮，选图就发给这个模型。'
-          : '先在下面「模型配置」里填好接口地址与密钥，再打开开关。',
+        children: cfg.enabled !== true
+          ? '先在下面「模型配置」里打开总开关（白嫖豆包开着就不用填 key，但要去「网页版（免 key）」里登录一次）。'
+          : web
+            ? (composite
+                ? '复合模式：每次识图网页版和外挂模型各跑一遍，结果按来源合并。'
+                : '白嫖豆包：每次识图都开本机浏览器走网页版，不花 API key。')
+            : '聊天页右下角那颗鲸鱼按钮，选图就发给这个模型。',
       }),
     ])
   }

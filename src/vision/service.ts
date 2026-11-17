@@ -8,12 +8,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   DEFAULT_VISION_CONFIG,
-  isWebProtocol,
   normalizeVisionConfig,
+  planRecognition,
   resolveProtocol,
   redactKey,
   toView,
-  webSiteOf,
   type VisionConfig,
   type VisionConfigView,
 } from './config.js'
@@ -39,16 +38,104 @@ export async function recognizeViaBrowser(
   log?: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void,
 ): Promise<string> {
   assertUsable(config, image)
-  const protocol = resolveProtocol(config)
-  if (!isWebProtocol(protocol)) throw new VisionError('当前协议不是网页版', 0)
-  const site: WebSiteId = webSiteOf(protocol)
   const prompt = typeof image.prompt === 'string' && image.prompt.trim() !== '' ? image.prompt.trim() : config.prompt
   const result = await recognizeViaWeb(
-    site,
+    config.webSite,
     { base64: image.base64, mime: image.mime, prompt, timeoutMs: config.timeoutMs },
     { dshHome, headless: config.webHeadless, project: config.webProject, log },
   )
   return result.truncated ? `${result.text}\n\n（网页版生成超时被截断：以上是已生成的部分，可加大超时或重试）` : result.text
+}
+
+/** 一路识图的结果（合并用）。 */
+export interface BranchResult {
+  ok: boolean
+  text?: string
+  error?: string
+  /** 原始错误带的 HTTP 状态（路由层靠它决定回 4xx 还是 502）。 */
+  status?: number
+}
+
+/**
+ * 把多路结果合成一段给模型看的话（`composite` 模式）。
+ *
+ * 纪律：**一路失败不能拖垮另一路**——只要有一路成功就返回文本，并把失败原因附在末尾；
+ * 两路都失败才抛错（错误里带两边的原因，便于用户判断是没登录还是 key 错了）。
+ */
+export function composeRecognition(branches: Array<{ label: string; result: BranchResult }>): string {
+  const ok = branches.filter((b) => b.result.ok && (b.result.text ?? '').trim() !== '')
+  const failed = branches.filter((b) => !(b.result.ok && (b.result.text ?? '').trim() !== ''))
+  if (ok.length === 0) {
+    const reasons = failed.map((b) => `${b.label}=${b.result.error ?? '没有返回内容'}`).join('；')
+    throw new VisionError(`识图两路都失败了：${reasons || '原因不明'}`, 0)
+  }
+  const body = ok.length === 1
+    ? (ok[0]?.result.text ?? '').trim()
+    : ok.map((b) => `【${b.label}】\n${(b.result.text ?? '').trim()}`).join('\n\n')
+  if (failed.length === 0) return body
+  const note = failed.map((b) => `${b.label} 失败：${b.result.error ?? '没有返回内容'}`).join('；')
+  return `${body}\n\n（另一路没成，已忽略：${note}）`
+}
+
+export interface RecognizeDeps {
+  dshHome: string
+  log?: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
+  /** 可注入：网页版实现（测试用；默认走真浏览器）。 */
+  webRecognize?: (config: VisionConfig, image: ImageInput, dshHome: string, log?: RecognizeDeps['log']) => Promise<string>
+}
+
+/**
+ * 识图总入口：按 `planRecognition` 决定跑哪几路。
+ *
+ * `composite` 是**并行**跑的（网页版要 8~20 秒、API 只要几秒，串行等于白等），
+ * 两路各自 try/catch，互不影响。
+ */
+export async function runRecognition(config: VisionConfig, image: ImageInput, deps: RecognizeDeps): Promise<string> {
+  assertUsable(config, image)
+  const plan = planRecognition(config)
+  const webImpl = deps.webRecognize ?? recognizeViaBrowser
+  const fail = (error: unknown): BranchResult => {
+    const asVision = error as { message?: string; status?: number }
+    return {
+      ok: false,
+      error: String(asVision?.message ?? error),
+      status: typeof asVision?.status === 'number' ? asVision.status : 0,
+    }
+  }
+  const webRun = async (): Promise<BranchResult> => {
+    try {
+      return { ok: true, text: await webImpl(config, image, deps.dshHome, deps.log) }
+    } catch (error) {
+      return fail(error)
+    }
+  }
+  const apiRun = async (): Promise<BranchResult> => {
+    try {
+      return { ok: true, text: await recognize(config, image) }
+    } catch (error) {
+      return fail(error)
+    }
+  }
+
+  const webLabel = `网页版${config.webSite === 'gemini' ? ' Gemini' : '豆包'}`
+  const apiLabel = `外挂模型${config.model === '' ? '' : `（${config.model}）`}`
+
+  if (plan.webSite && plan.api) {
+    const [web, api] = await Promise.all([webRun(), apiRun()])
+    deps.log?.('识图复合模式完成', { web: web.ok, api: api.ok })
+    return composeRecognition([
+      { label: webLabel, result: web },
+      { label: apiLabel, result: api },
+    ])
+  }
+  if (plan.webSite) {
+    const web = await webRun()
+    if (!web.ok) throw new VisionError(web.error ?? '网页版识图失败', web.status ?? 0)
+    return composeRecognition([{ label: webLabel, result: web }])
+  }
+  const api = await apiRun()
+  if (!api.ok) throw new VisionError(api.error ?? '外挂模型识图失败', api.status ?? 0)
+  return composeRecognition([{ label: apiLabel, result: api }])
 }
 
 /** 存储目录：`<dshHome>/storages/dsh-remote-dafeiyu`（与远控/人设的 storages 平级）。 */
@@ -179,6 +266,7 @@ export interface VisionService {
 export function createVisionService(
   dshHome: string,
   log?: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void,
+  deps?: Pick<RecognizeDeps, 'webRecognize'>,
 ): VisionService {
   const dir = visionDir(dshHome)
   const configFile = visionConfigFile(dshHome)
@@ -198,21 +286,20 @@ export function createVisionService(
       return { ok: true, config: toView(config) }
     },
     enabled: () => config.enabled,
-    recognize: (image) =>
-      isWebProtocol(resolveProtocol(config))
-        ? recognizeViaBrowser(config, image, dshHome, log)
-        : recognize(config, image),
+    recognize: (image) => runRecognition(config, image, { dshHome, log, webRecognize: deps?.webRecognize }),
     listModels: () => listModels(config),
     webStatus: (site) => webStatus(site, { dshHome, headless: config.webHeadless, log }),
     webLogin: (site, waitMs) => loginSite(site, { dshHome, headless: false, waitMs, log }),
     dispose: () => closeAll(log),
     describe: () => {
-      const protocol = resolveProtocol(config)
+      const plan = planRecognition(config)
       return {
         enabled: config.enabled,
-        protocol,
-        webSite: isWebProtocol(protocol) ? webSiteOf(protocol) : null,
-        configured: isWebProtocol(protocol) ? true : config.apiKey !== '',
+        protocol: resolveProtocol(config),
+        freeDoubao: config.freeDoubao,
+        mode: config.mode,
+        webSite: plan.webSite,
+        configured: plan.webSite !== null || config.apiKey !== '',
         apiKeyHint: redactKey(config.apiKey),
         model: config.model,
       }
