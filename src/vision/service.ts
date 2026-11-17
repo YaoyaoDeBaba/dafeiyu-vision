@@ -8,16 +8,48 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   DEFAULT_VISION_CONFIG,
+  isWebProtocol,
   normalizeVisionConfig,
   resolveProtocol,
   redactKey,
   toView,
+  webSiteOf,
   type VisionConfig,
   type VisionConfigView,
 } from './config.js'
 import { buildRequest, VisionError, type ImageInput } from './protocols.js'
+import { closeAll, loginSite, recognizeViaWeb, webStatus, type WebSiteId } from './web/index.js'
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+/** 三条与协议无关的前置判据（总开关 / 空图 / 太大）。 */
+function assertUsable(config: VisionConfig, image: ImageInput): void {
+  if (!config.enabled) {
+    throw new VisionError('识图未开启：设置 → 大肥鱼 → 人设 → 识图，打开总开关', 0)
+  }
+  if (image.base64 === '') throw new VisionError('图片内容为空', 0)
+  if (image.base64.length * 0.75 > MAX_IMAGE_BYTES) throw new VisionError('图片太大（上限 20MB），先压缩再发', 0)
+}
+
+/** 网页版（免 key）识图：拿本机浏览器里已登录的豆包 / Gemini。 */
+export async function recognizeViaBrowser(
+  config: VisionConfig,
+  image: ImageInput,
+  dshHome: string,
+  log?: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void,
+): Promise<string> {
+  assertUsable(config, image)
+  const protocol = resolveProtocol(config)
+  if (!isWebProtocol(protocol)) throw new VisionError('当前协议不是网页版', 0)
+  const site: WebSiteId = webSiteOf(protocol)
+  const prompt = typeof image.prompt === 'string' && image.prompt.trim() !== '' ? image.prompt.trim() : config.prompt
+  const result = await recognizeViaWeb(
+    site,
+    { base64: image.base64, mime: image.mime, prompt, timeoutMs: config.timeoutMs },
+    { dshHome, headless: config.webHeadless, log },
+  )
+  return result.truncated ? `${result.text}\n\n（网页版生成超时被截断：以上是已生成的部分，可加大超时或重试）` : result.text
+}
 
 /** 存储目录：`<dshHome>/storages/dsh-remote-dafeiyu`（与远控/人设的 storages 平级）。 */
 export function visionDir(dshHome: string): string {
@@ -62,14 +94,10 @@ function errorSnippet(body: string): string {
  * @param image  base64 + mime（+ 单次指令）
  */
 export async function recognize(config: VisionConfig, image: ImageInput): Promise<string> {
-  if (!config.enabled) {
-    throw new VisionError('识图未开启：设置 → 大肥鱼 → 人设 → 识图，打开总开关', 0)
-  }
+  assertUsable(config, image)
   if (config.apiKey.trim() === '') {
     throw new VisionError('识图还没配置 API Key：设置 → 大肥鱼 → 人设 → 识图里填外挂视觉模型的 key', 0)
   }
-  if (image.base64 === '') throw new VisionError('图片内容为空', 0)
-  if (image.base64.length * 0.75 > MAX_IMAGE_BYTES) throw new VisionError('图片太大（上限 20MB），先压缩再发', 0)
 
   const prepared = buildRequest(config, image)
   let response: Response
@@ -139,10 +167,19 @@ export interface VisionService {
   enabled(): boolean
   recognize(image: ImageInput): Promise<string>
   listModels(): Promise<string[]>
+  /** 网页版：探登录态（会起/复用无头浏览器）。 */
+  webStatus(site: WebSiteId): Promise<Record<string, unknown>>
+  /** 网页版：开有头窗口等用户登录。 */
+  webLogin(site: WebSiteId, waitMs?: number): Promise<{ loggedIn: boolean; waitedMs: number }>
+  /** 关掉所有网页版浏览器（插件卸载时调）。 */
+  dispose(): Promise<void>
   describe(): Record<string, unknown>
 }
 
-export function createVisionService(dshHome: string): VisionService {
+export function createVisionService(
+  dshHome: string,
+  log?: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void,
+): VisionService {
   const dir = visionDir(dshHome)
   const configFile = visionConfigFile(dshHome)
   let config = readVisionConfig(configFile)
@@ -161,14 +198,24 @@ export function createVisionService(dshHome: string): VisionService {
       return { ok: true, config: toView(config) }
     },
     enabled: () => config.enabled,
-    recognize: (image) => recognize(config, image),
+    recognize: (image) =>
+      isWebProtocol(resolveProtocol(config))
+        ? recognizeViaBrowser(config, image, dshHome, log)
+        : recognize(config, image),
     listModels: () => listModels(config),
-    describe: () => ({
-      enabled: config.enabled,
-      protocol: resolveProtocol(config),
-      configured: config.apiKey !== '',
-      apiKeyHint: redactKey(config.apiKey),
-      model: config.model,
-    }),
+    webStatus: (site) => webStatus(site, { dshHome, headless: config.webHeadless, log }),
+    webLogin: (site, waitMs) => loginSite(site, { dshHome, headless: false, waitMs, log }),
+    dispose: () => closeAll(log),
+    describe: () => {
+      const protocol = resolveProtocol(config)
+      return {
+        enabled: config.enabled,
+        protocol,
+        webSite: isWebProtocol(protocol) ? webSiteOf(protocol) : null,
+        configured: isWebProtocol(protocol) ? true : config.apiKey !== '',
+        apiKeyHint: redactKey(config.apiKey),
+        model: config.model,
+      }
+    },
   }
 }

@@ -26,6 +26,13 @@ export const VISION_BASE = '/api/dsh-remote-dafeiyu/vision'
  * 常量拼接，判据就没法在产物里逐字找到这条路由。
  */
 export const VISION_RECOGNIZE_ROUTE = '/api/dsh-remote-dafeiyu/vision/recognize'
+/**
+ * 网页版（免 key）两条例路。同样**逐字**与宿主侧 `src/vision/routes.ts` 对齐：
+ * - status：`GET ?site=doubao|gemini|both[&fresh=1]` → `{ ok, sites:[{ site, loggedIn, … }] }`
+ * - login：`POST { site, waitMs? }` → 弹有头窗口等用户登录 → `{ ok, loggedIn }`
+ */
+export const VISION_WEB_STATUS_ROUTE = '/api/dsh-remote-dafeiyu/vision/web/status'
+export const VISION_WEB_LOGIN_ROUTE = '/api/dsh-remote-dafeiyu/vision/web/login'
 
 export async function callJson(path: string, body: unknown | undefined, timeoutMs = 20_000): Promise<Record<string, unknown>> {
   const init: RequestInit =

@@ -56,6 +56,12 @@ function preflight(request, response) {
 }
 
 // src/vision/config.ts
+function isWebProtocol(protocol) {
+  return protocol === "web-doubao" || protocol === "web-gemini";
+}
+function webSiteOf(protocol) {
+  return protocol === "web-doubao" ? "doubao" : "gemini";
+}
 var DEFAULT_VISION_PROMPT = "\u4F60\u662F\u4E00\u540D\u4E13\u4E1A\u7684\u56FE\u50CF\u8BC6\u522B\u52A9\u624B\u3002\u8BF7\u4ED4\u7EC6\u89C2\u5BDF\u7528\u6237\u63D0\u4F9B\u7684\u56FE\u7247\uFF0C\u7528\u4E2D\u6587\u7ED9\u51FA\u8BE6\u7EC6\u3001\u7ED3\u6784\u5316\u7684\u63CF\u8FF0\uFF1A\u2460 \u6574\u4F53\u662F\u4EC0\u4E48\uFF08\u622A\u56FE/\u7167\u7247/\u56FE\u8868/UI \u754C\u9762\u7B49\uFF09\uFF1B\u2461 \u5173\u952E\u5185\u5BB9\u4E0E\u5E03\u5C40\uFF1B\u2462 \u56FE\u4E2D\u6240\u6709\u53EF\u89C1\u6587\u5B57\u9010\u5B57\u8F6C\u5F55\uFF08\u4EE3\u7801\u3001\u62A5\u9519\u3001\u6309\u94AE\u6587\u6848\u90FD\u4E0D\u8981\u6F0F\uFF09\uFF1B\u2463 \u5982\u679C\u8FD9\u662F\u5C4F\u5E55\u622A\u56FE\uFF0C\u91CD\u70B9\u63CF\u8FF0\u754C\u9762\u4E0A\u7684\u62A5\u9519\u3001\u5F39\u7A97\u3001\u6309\u94AE\u72B6\u6001\u3002";
 var DEFAULT_VISION_CONFIG = {
   enabled: false,
@@ -66,7 +72,8 @@ var DEFAULT_VISION_CONFIG = {
   prompt: DEFAULT_VISION_PROMPT,
   timeoutMs: 6e4,
   requestTemplate: "",
-  responsePath: ""
+  responsePath: "",
+  webHeadless: true
 };
 function redactKey(key) {
   const value = String(key ?? "");
@@ -84,11 +91,21 @@ function toView(config) {
     timeoutMs: config.timeoutMs,
     requestTemplate: config.requestTemplate,
     responsePath: config.responsePath,
+    webHeadless: config.webHeadless,
     apiKeySet: config.apiKey !== "",
     apiKeyHint: redactKey(config.apiKey)
   };
 }
-var PROTOCOLS = ["auto", "openai-chat", "openai-responses", "anthropic", "gemini", "custom"];
+var PROTOCOLS = [
+  "auto",
+  "openai-chat",
+  "openai-responses",
+  "anthropic",
+  "gemini",
+  "custom",
+  "web-doubao",
+  "web-gemini"
+];
 function cleanString(value, fallback, max) {
   if (typeof value !== "string") return fallback;
   const trimmed = value.trim();
@@ -107,7 +124,8 @@ function normalizeVisionConfig(input, base = DEFAULT_VISION_CONFIG) {
     prompt: cleanString(raw.prompt, base.prompt, 4e3) || base.prompt,
     timeoutMs: timeout,
     requestTemplate: cleanString(raw.requestTemplate, base.requestTemplate, 8e3),
-    responsePath: cleanString(raw.responsePath, base.responsePath, 200)
+    responsePath: cleanString(raw.responsePath, base.responsePath, 200),
+    webHeadless: typeof raw.webHeadless === "boolean" ? raw.webHeadless : base.webHeadless
   };
 }
 function detectProtocol(apiBase) {
@@ -137,16 +155,16 @@ function promptOf(config, image) {
   const custom = typeof image.prompt === "string" ? image.prompt.trim() : "";
   return custom !== "" ? custom : config.prompt;
 }
-function deepGet(value, path6) {
+function deepGet(value, path8) {
   let cursor = value;
-  for (const key of path6) {
+  for (const key of path8) {
     if (cursor === null || typeof cursor !== "object") return void 0;
     cursor = cursor[key];
   }
   return cursor;
 }
-function splitPath(path6) {
-  return String(path6 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
+function splitPath(path8) {
+  return String(path8 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
 }
 function textFrom(value) {
   if (typeof value === "string") return value.trim();
@@ -302,6 +320,10 @@ function buildRequest(config, image) {
 var VISION_CONFIG_ROUTE = "/api/dsh-remote-dafeiyu/vision/config";
 var VISION_RECOGNIZE_ROUTE = "/api/dsh-remote-dafeiyu/vision/recognize";
 var VISION_MODELS_ROUTE = "/api/dsh-remote-dafeiyu/vision/models";
+var VISION_WEB_STATUS_ROUTE = "/api/dsh-remote-dafeiyu/vision/web/status";
+var VISION_WEB_LOGIN_ROUTE = "/api/dsh-remote-dafeiyu/vision/web/login";
+var statusCache = /* @__PURE__ */ new Map();
+var STATUS_TTL_MS = 6e4;
 var MAX_BODY_BYTES = 25 * 1024 * 1024;
 function json(response, status, body) {
   const payload = JSON.stringify(body);
@@ -437,11 +459,97 @@ function visionModelsHandler(deps) {
     }
   };
 }
+var WEB_SITES = ["doubao", "gemini"];
+function parseWebSite(value) {
+  return typeof value === "string" && WEB_SITES.includes(value) ? value : void 0;
+}
+function visionWebStatusHandler(deps) {
+  return async (request, response) => {
+    const denied = rejected(request);
+    if (denied) {
+      json(response, 403, { ok: false, error: denied });
+      return;
+    }
+    if (request.method !== "GET" && request.method !== "POST") {
+      json(response, 405, { ok: false, error: "\u53EA\u652F\u6301 GET / POST" });
+      return;
+    }
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const raw = (url.searchParams.get("site") ?? "both").toLowerCase();
+    const fresh = url.searchParams.get("fresh") === "1";
+    const sites = raw === "both" ? [...WEB_SITES] : (() => {
+      const one = parseWebSite(raw);
+      return one ? [one] : [];
+    })();
+    if (sites.length === 0) {
+      json(response, 400, { ok: false, error: `site \u53EA\u80FD\u662F ${WEB_SITES.join(" / ")} / both` });
+      return;
+    }
+    const results = [];
+    for (const site of sites) {
+      const cached = statusCache.get(site);
+      if (!fresh && cached && Date.now() - cached.at < STATUS_TTL_MS) {
+        results.push({ ...cached.value, cached: true });
+        continue;
+      }
+      try {
+        const value = await deps.service.webStatus(site);
+        statusCache.set(site, { at: Date.now(), value });
+        results.push({ ...value, cached: false });
+      } catch (error) {
+        results.push({ site, label: site, loggedIn: false, error: String(error?.message ?? error) });
+      }
+    }
+    json(response, 200, { ok: true, sites: results });
+  };
+}
+function visionWebLoginHandler(deps) {
+  return async (request, response) => {
+    const denied = rejected(request);
+    if (denied) {
+      json(response, 403, { ok: false, error: denied });
+      return;
+    }
+    if (request.method !== "POST") {
+      json(response, 405, { ok: false, error: "\u53EA\u652F\u6301 POST" });
+      return;
+    }
+    const body = await readBody(request);
+    if (!body.ok) {
+      json(response, body.status, { ok: false, error: body.error });
+      return;
+    }
+    let parsed = {};
+    try {
+      parsed = body.text === "" ? {} : JSON.parse(body.text);
+    } catch {
+      json(response, 400, { ok: false, error: "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5 JSON" });
+      return;
+    }
+    const site = parseWebSite(parsed.site);
+    if (!site) {
+      json(response, 400, { ok: false, error: `site \u5FC5\u987B\u662F ${WEB_SITES.join(" / ")}` });
+      return;
+    }
+    const waitMs = typeof parsed.waitMs === "number" && Number.isFinite(parsed.waitMs) ? Math.min(Math.max(Math.round(parsed.waitMs), 3e4), 3e5) : 15e4;
+    try {
+      deps.log("\u6253\u5F00\u7F51\u9875\u7248\u767B\u5F55\u7A97\u53E3", { site, waitMs });
+      const result = await deps.service.webLogin(site, waitMs);
+      statusCache.delete(site);
+      deps.log("\u7F51\u9875\u7248\u767B\u5F55\u7ED3\u679C", { site, loggedIn: result.loggedIn });
+      json(response, 200, { ok: true, site, ...result });
+    } catch (error) {
+      json(response, 500, { ok: false, site, error: String(error?.message ?? error) });
+    }
+  };
+}
 function registerVisionRoutes(webServer, deps) {
   const definitions = [
     { kind: "exact", path: VISION_CONFIG_ROUTE, handler: visionConfigHandler(deps) },
     { kind: "exact", path: VISION_RECOGNIZE_ROUTE, handler: visionRecognizeHandler(deps) },
-    { kind: "exact", path: VISION_MODELS_ROUTE, handler: visionModelsHandler(deps) }
+    { kind: "exact", path: VISION_MODELS_ROUTE, handler: visionModelsHandler(deps) },
+    { kind: "exact", path: VISION_WEB_STATUS_ROUTE, handler: visionWebStatusHandler(deps) },
+    { kind: "exact", path: VISION_WEB_LOGIN_ROUTE, handler: visionWebLoginHandler(deps) }
   ];
   const off = [];
   const wrapped = definitions.map((definition) => ({
@@ -479,18 +587,697 @@ function registerVisionRoutes(webServer, deps) {
 }
 
 // src/vision/service.ts
-import fs from "node:fs";
+import fs3 from "node:fs";
+import path3 from "node:path";
+
+// src/vision/web/index.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+
+// src/vision/web/driver.ts
+import { spawn } from "node:child_process";
+import http from "node:http";
+import net from "node:net";
+import { existsSync, mkdirSync } from "node:fs";
+var wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function findBrowser(explicit) {
+  if (explicit) return existsSync(explicit) ? explicit : void 0;
+  const env = (process.env.DAFEIYU_WEBVISION_BROWSER ?? "").trim();
+  if (env !== "") return existsSync(env) ? env : void 0;
+  const candidates = [
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => port > 0 ? resolve(port) : reject(new Error("\u62FF\u4E0D\u5230\u7A7A\u95F2\u7AEF\u53E3")));
+    });
+  });
+}
+function getJson(url, timeoutMs = 2e3) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("CDP \u63A2\u6D4B\u8D85\u65F6")));
+    request.on("error", reject);
+  });
+}
+function killTree(pid, log) {
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    } else {
+      process.kill(-pid, "SIGKILL");
+    }
+  } catch (error) {
+    log("\u6740\u6D4F\u89C8\u5668\u8FDB\u7A0B\u6811\u5931\u8D25", { pid, reason: String(error?.message ?? error) });
+  }
+}
+function startParentWatchdog(browserPid, log) {
+  const timer = setInterval(() => {
+    try {
+      process.kill(browserPid, 0);
+    } catch {
+      clearInterval(timer);
+      return;
+    }
+    if (process.ppid === 1) {
+      clearInterval(timer);
+      killTree(browserPid, log);
+    }
+  }, 5e3);
+  timer.unref?.();
+  return timer;
+}
+async function launchCdpBrowser(options) {
+  const log = options.log ?? (() => void 0);
+  const executable = findBrowser(options.executable);
+  if (!executable) {
+    throw new Error("\u627E\u4E0D\u5230 Edge/Chrome\uFF1A\u53EF\u4EE5\u7528\u73AF\u5883\u53D8\u91CF DAFEIYU_WEBVISION_BROWSER \u6307\u5B9A\u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84");
+  }
+  const headless = options.headless !== false;
+  mkdirSync(options.profileDir, { recursive: true });
+  const port = await freePort();
+  const args = [
+    headless ? "--headless=new" : "--start-maximized",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    // 关掉 Edge 的账号同步/首次弹窗：新 profile 首启动会弹 edge://sync-confirmation-dialog，
+    // 那个内部页会抢走 page target（见下面 isHttpPage 的注释）。
+    "--disable-sync",
+    "--no-service-autorun",
+    "--disable-features=Translate,OptimizationHints,msSyncConsent,SigninInterception",
+    "--mute-audio",
+    "--hide-scrollbars",
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${options.profileDir}`,
+    "--lang=zh-CN",
+    "about:blank"
+  ];
+  const child = spawn(executable, args, {
+    stdio: "ignore",
+    windowsHide: headless,
+    cwd: options.profileDir
+  });
+  if (typeof child.pid === "number") startParentWatchdog(child.pid, log);
+  let closed = false;
+  let watchdog;
+  const cleanup = async () => {
+    if (closed) return;
+    closed = true;
+    if (watchdog) clearInterval(watchdog);
+    try {
+      await Promise.race([
+        socket.readyState === 1 ? (socket.send(JSON.stringify({ id: -1, method: "Browser.close" })), Promise.resolve()) : Promise.resolve(),
+        wait(2e3)
+      ]);
+      for (let i = 0; i < 40; i += 1) {
+        if (!child.pid) break;
+        try {
+          process.kill(child.pid, 0);
+        } catch {
+          break;
+        }
+        await wait(100);
+      }
+    } catch {
+    }
+    if (typeof child.pid === "number") killTree(child.pid, log);
+    await wait(150);
+  };
+  const readyTimeout = options.readyTimeoutMs ?? 25e3;
+  const deadline = Date.now() + readyTimeout;
+  let target;
+  const isHttpPage = (row) => row.type === "page" && typeof row.webSocketDebuggerUrl === "string" && /^https?:/i.test(row.url ?? "");
+  while (Date.now() < deadline) {
+    try {
+      const list = await getJson(`http://127.0.0.1:${port}/json/list`);
+      target = list.find(isHttpPage);
+      if (target) break;
+      if (Date.now() > deadline - readyTimeout / 2) {
+        const any = list.find((row) => row.type === "page" && typeof row.webSocketDebuggerUrl === "string");
+        if (any) {
+          target = any;
+          break;
+        }
+      }
+    } catch {
+    }
+    await wait(200);
+  }
+  if (!target?.webSocketDebuggerUrl) {
+    await cleanup();
+    throw new Error(
+      `\u6D4F\u89C8\u5668\u6CA1\u8D77\u6765\uFF08\u7AEF\u53E3 ${port}\uFF0C\u7B49\u4E86 ${Math.round(readyTimeout / 1e3)} \u79D2\uFF09\u3002\u5E38\u89C1\u539F\u56E0\uFF1A\u8FD9\u4E2A profile \u5DF2\u7ECF\u88AB\u53E6\u4E00\u4E2A\u7A97\u53E3\u5360\u7740\uFF08\u5148\u5168\u90E8\u5173\u6389\u518D\u8BD5\uFF09`
+    );
+  }
+  const WebSocketCtor = globalThis.WebSocket;
+  if (typeof WebSocketCtor !== "function") {
+    await cleanup();
+    throw new Error("\u5BBF\u4E3B Node \u7248\u672C\u8FC7\u4F4E\uFF08\u6CA1\u6709\u5168\u5C40 WebSocket\uFF0C\u9700\u8981 22+\uFF09\uFF0C\u7F51\u9875\u7248\u89C6\u89C9\u4E0D\u53EF\u7528");
+  }
+  const socket = new WebSocketCtor(target.webSocketDebuggerUrl);
+  let nextId = 1;
+  const pending = /* @__PURE__ */ new Map();
+  socket.addEventListener("message", (event) => {
+    let message;
+    try {
+      message = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
+    if (typeof message.id !== "number") return;
+    const waiter = pending.get(message.id);
+    if (!waiter) return;
+    pending.delete(message.id);
+    clearTimeout(waiter.timer);
+    if (message.error) waiter.reject(new Error(message.error.message ?? "CDP \u9519\u8BEF"));
+    else waiter.resolve(message.result);
+  });
+  socket.addEventListener("close", () => {
+    for (const [id, waiter] of pending) {
+      pending.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("CDP \u8FDE\u63A5\u65AD\u4E86\uFF08\u6D4F\u89C8\u5668\u88AB\u5173\u6389\uFF1F\uFF09"));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", () => resolve());
+    socket.addEventListener("error", () => reject(new Error("\u8FDE\u4E0D\u4E0A CDP WebSocket")));
+    setTimeout(() => reject(new Error("\u8FDE\u4E0D\u4E0A CDP WebSocket\uFF0810s\uFF09")), 1e4);
+  });
+  const call = (method, params, timeoutMs = 2e4) => {
+    const id = nextId++;
+    socket.send(JSON.stringify({ id, method, params }));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`CDP ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+    });
+  };
+  const evaluate = async (expression, timeoutMs = 3e4) => {
+    const result = await call(
+      "Runtime.evaluate",
+      { expression, awaitPromise: true, returnByValue: true, userGesture: false },
+      timeoutMs
+    );
+    if (result?.exceptionDetails) {
+      const detail = result.exceptionDetails.exception?.description ?? result.exceptionDetails.text ?? "\u9875\u9762\u6267\u884C\u51FA\u9519";
+      throw new Error(String(detail).slice(0, 400));
+    }
+    return result?.result?.value;
+  };
+  try {
+    await call("Page.enable", {}, 1e4).catch(() => void 0);
+    await call("Runtime.enable", {}, 1e4).catch(() => void 0);
+    await call("DOM.enable", {}, 1e4).catch(() => void 0);
+    await call("Network.enable", {}, 1e4).catch(() => void 0);
+  } catch {
+  }
+  if (headless) {
+    try {
+      const raw = await evaluate("navigator.userAgent", 5e3);
+      if (typeof raw === "string" && raw.includes("HeadlessChrome")) {
+        await call("Network.setUserAgentOverride", { userAgent: raw.replace("HeadlessChrome", "Chrome") }, 5e3);
+      }
+    } catch {
+    }
+  }
+  return {
+    port,
+    evaluate,
+    call,
+    async goto(url, timeoutMs = 4e4) {
+      await call("Page.navigate", { url }, timeoutMs).catch(() => void 0);
+      const dl = Date.now() + timeoutMs;
+      while (Date.now() < dl) {
+        const state = await evaluate("document.readyState").catch(() => "loading");
+        if (state === "complete") return;
+        await wait(300);
+      }
+    },
+    async screenshot(file) {
+      try {
+        const shot = await call("Page.captureScreenshot", { format: "png" }, 15e3);
+        if (shot?.data) {
+          const fs6 = await import("node:fs");
+          fs6.writeFileSync(file, Buffer.from(shot.data, "base64"));
+        }
+      } catch {
+      }
+    },
+    async close() {
+      try {
+        socket.close();
+      } catch {
+      }
+      await cleanup();
+    }
+  };
+}
+
+// src/vision/web/sites.ts
+import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
+var DOUBAO = {
+  id: "doubao",
+  label: "\u8C46\u5305",
+  homeUrl: "https://www.doubao.com/chat/",
+  loginUrl: "https://www.doubao.com/chat/",
+  editorSelector: ".ProseMirror",
+  loginProbe: `(() => {
+    if (document.querySelector('[data-testid="to_login_button"]')) return false;
+    if (location.search.includes('from_logout')) return false;
+    return true;
+  })()`,
+  openUpload: `(() => {
+    const btn = document.querySelector('[data-testid="upload_file_button"]');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`,
+  fileInputSelector: "input[type=file]",
+  answerSelectors: [
+    '[data-testid="message_text_content"]',
+    '[data-testid="receive_message"] [data-testid*="text"]',
+    '[data-testid="receive_message"]',
+    ".flow-markdown-body"
+  ],
+  busySelectors: ['[data-testid="stop_generation_button"]', '[aria-label*="\u505C\u6B62\u751F\u6210"]']
+};
+var GEMINI = {
+  id: "gemini",
+  label: "Gemini",
+  homeUrl: "https://gemini.google.com/app",
+  loginUrl: "https://gemini.google.com/app",
+  editorSelector: ".ql-editor",
+  loginProbe: `(() => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    if (buttons.some((b) => (b.getAttribute('aria-label') || '').trim() === '\u767B\u5F55')) return false;
+    if (document.querySelector('a[href*="accounts.google.com/ServiceLogin"]')) return false;
+    return !!document.querySelector('.ql-editor');
+  })()`,
+  openUpload: `(() => {
+    const btn = document.querySelector('button[aria-label="\u4E0A\u4F20\u548C\u5DE5\u5177"]')
+      || Array.from(document.querySelectorAll('button')).find((b) => /\u4E0A\u4F20\u548C\u5DE5\u5177|Upload and tools/i.test(b.getAttribute('aria-label') || ''));
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`,
+  /**
+   * ⚠️ 别写 `input[accept="image/*"]`（精确匹配）：登录后 Gemini 给的是
+   * `accept="image/*,video/*"`，精确匹配会**一个都找不到**，表现是"点了上传却等不到输入框"。
+   * 用子串匹配（`*=`）才稳。
+   */
+  fileInputSelector: 'input[accept*="image/"]',
+  answerSelectors: ["model-response .markdown", "model-response message-content", "response-container", "model-response"],
+  busySelectors: ['[aria-label*="\u505C\u6B62"]', '[aria-label*="Stop"]'],
+  newChat: `(() => {
+    const hit = Array.from(document.querySelectorAll('button, a')).find((el) => {
+      const label = (el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '');
+      return /\u53D1\u8D77\u65B0\u5BF9\u8BDD|New chat/i.test(label);
+    });
+    if (!hit) return false;
+    hit.click();
+    return true;
+  })()`,
+  emptyProbe: `document.querySelectorAll('model-response').length === 0`,
+  sendSelector: 'button[aria-label="\u53D1\u9001"], button[aria-label*="Send"], button[aria-label*="\u53D1\u9001"]'
+};
+var SITES = { doubao: DOUBAO, gemini: GEMINI };
+var wait2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function pollTrue(client, expression, timeoutMs, stepMs = 300) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ok = await client.evaluate(expression).catch(() => false);
+    if (ok) return true;
+    await wait2(stepMs);
+  }
+  return false;
+}
+function writeTempImage(base64, mime) {
+  const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "png";
+  const file = path.join(os.tmpdir(), `dafeiyu-webvision-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
+  fs.writeFileSync(file, Buffer.from(base64, "base64"));
+  return file;
+}
+async function setFileInput(client, selector, file) {
+  const handle = await client.call("Runtime.evaluate", {
+    expression: `document.querySelector(${JSON.stringify(selector)})`,
+    returnByValue: false
+  }).catch(() => void 0);
+  const objectId = handle?.result?.objectId;
+  if (!objectId) return false;
+  await client.call("DOM.setFileInputFiles", { files: [file], objectId }, 2e4);
+  return true;
+}
+async function typeInto(client, selector, text) {
+  return client.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      el.focus();
+      const ok = document.execCommand('insertText', false, ${JSON.stringify(text)});
+      return ok !== false;
+    })()`).catch(() => false);
+}
+async function pressEnter(client) {
+  for (const type of ["rawKeyDown", "keyUp"]) {
+    await client.call("Input.dispatchKeyEvent", {
+      type,
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+      nativeVirtualKeyCode: 13
+    });
+  }
+}
+async function clearEditor(client, selector) {
+  return client.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      el.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand('delete');
+      return true;
+    })()`).catch(() => false);
+}
+function editorEmptyExpression(selector) {
+  return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.innerText || '').trim() === '' : false })()`;
+}
+async function clickElement(client, selector) {
+  const box = await client.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`).catch(() => null);
+  if (!box) return false;
+  for (const type of ["mousePressed", "mouseReleased"]) {
+    await client.call("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 });
+  }
+  return true;
+}
+async function readAnswer(client, selectors, exclude = "") {
+  const list = JSON.stringify(selectors);
+  const result = await client.evaluate(`(() => {
+      const skip = ${JSON.stringify(exclude.trim())};
+      for (const sel of ${list}) {
+        const nodes = Array.from(document.querySelectorAll(sel));
+        if (nodes.length === 0) continue;
+        for (let i = nodes.length - 1; i >= 0; i -= 1) {
+          const text = ((nodes[i].innerText || nodes[i].textContent || '') + '').trim();
+          if (text === '' || text === skip) continue;
+          return { text, selector: sel };
+        }
+      }
+      return { text: '', selector: '' };
+    })()`).catch(() => ({ text: "", selector: "" }));
+  return result ?? { text: "", selector: "" };
+}
+async function stillBusy(client, selectors) {
+  if (selectors.length === 0) return false;
+  const list = JSON.stringify(selectors);
+  return client.evaluate(`(() => ${list}.some((sel) => !!document.querySelector(sel)))()`).catch(() => false);
+}
+var NOT_LOGGED_IN_HINT = (label) => `${label}\u6CA1\u6709\u767B\u5F55\uFF1A\u5148\u5728\u300C\u80A5\u9C7C\u8BC6\u56FE\u300D\u8BBE\u7F6E\u91CC\u70B9\u300C\u767B\u5F55 ${label}\u300D\uFF0C\u5728\u5F39\u51FA\u7684\u7A97\u53E3\u91CC\u767B\u4E00\u6B21\uFF08cookie \u4F1A\u7559\u5728\u672C\u673A profile \u91CC\uFF0C\u4E4B\u540E\u957F\u671F\u6709\u6548\uFF09`;
+function answerBudgetMs(timeoutMs) {
+  return Math.max(Number.isFinite(timeoutMs) ? timeoutMs : 0, 15e3);
+}
+async function askSite(client, site, options) {
+  const startedAt = Date.now();
+  const log = options.log ?? (() => void 0);
+  await client.goto(site.homeUrl);
+  const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25e3);
+  if (!ready) throw new VisionError(`${site.label}\u9875\u9762\u6CA1\u52A0\u8F7D\u51FA\u6765\uFF08\u627E\u4E0D\u5230\u8F93\u5165\u6846 ${site.editorSelector}\uFF09\uFF1A\u68C0\u67E5\u7F51\u7EDC\uFF0C\u6216\u5148\u5728\u8BBE\u7F6E\u91CC\u767B\u5F55\u4E00\u6B21`, 0);
+  const loggedIn = await client.evaluate(site.loginProbe).catch(() => false);
+  if (!loggedIn) throw new VisionError(NOT_LOGGED_IN_HINT(site.label), 401);
+  if (site.newChat) {
+    const clicked = await client.evaluate(site.newChat).catch(() => false);
+    if (clicked && site.emptyProbe) {
+      const clean = await pollTrue(client, site.emptyProbe, 1e4);
+      if (!clean) log("\u65B0\u5BF9\u8BDD\u6CA1\u6E05\u5E72\u51C0\uFF0C\u7EE7\u7EED\uFF08\u53EF\u80FD\u62BD\u5230\u65E7\u56DE\u7B54\uFF09", { site: site.id });
+    }
+  }
+  await clearEditor(client, site.editorSelector);
+  const opened = await client.evaluate(site.openUpload).catch(() => false);
+  if (!opened) throw new VisionError(`${site.label}\u9875\u9762\u4E0A\u627E\u4E0D\u5230\u4E0A\u4F20\u5165\u53E3\uFF08\u524D\u7AEF\u53EF\u80FD\u6539\u7248\u4E86\uFF09`, 0);
+  const inputReady = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.fileInputSelector)})`, 8e3);
+  if (!inputReady) throw new VisionError(`${site.label}\u70B9\u4E86\u4E0A\u4F20\u4F46\u6CA1\u51FA\u73B0\u6587\u4EF6\u8F93\u5165\u6846\uFF08\u524D\u7AEF\u53EF\u80FD\u6539\u7248\u4E86\uFF09`, 0);
+  const imageFile = writeTempImage(options.base64, options.mime);
+  try {
+    const attached = await setFileInput(client, site.fileInputSelector, imageFile).catch(() => false);
+    if (!attached) throw new VisionError(`${site.label}\u585E\u56FE\u5931\u8D25\uFF08file input \u62FF\u4E0D\u5230\u53E5\u67C4\uFF09`, 0);
+    const attachProbe = `(() => {
+      const nodes = document.querySelectorAll('rich-textarea img, [class*="attachment" i], [class*="file-preview" i], [class*="preview" i] img');
+      const text = document.body.innerText || '';
+      const uploading = /\u6B63\u5728\u4E0A\u4F20|\u4E0A\u4F20\u4E2D|Uploading/.test(text);
+      const hinted = /\u89E3\u91CA\u56FE\u7247|\u56FE\u7247\u5DF2\u4E0A\u4F20|Image attached/.test(text);
+      return { uploading, count: nodes.length + (hinted ? 1 : 0) };
+    })()`;
+    const uploadDeadline = Date.now() + 3e4;
+    let attachSeen = false;
+    while (Date.now() < uploadDeadline) {
+      const state = await client.evaluate(attachProbe).catch(() => ({ uploading: false, count: 0 }));
+      if (state.count > 0) attachSeen = true;
+      if (!state.uploading && attachSeen) break;
+      await wait2(400);
+    }
+    if (!attachSeen) log("\u6CA1\u770B\u5230\u9644\u4EF6\u843D\u5730\u8FF9\u8C61\uFF0C\u7EE7\u7EED\uFF08\u4EA4\u7ED9\u56DE\u7B54\u5224\u636E\u8BF4\u8BDD\uFF09", { site: site.id });
+    const typed = await typeInto(client, site.editorSelector, options.prompt);
+    if (!typed) throw new VisionError(`${site.label}\u8F93\u5165\u6846\u62FF\u4E0D\u5230\u7126\u70B9`, 0);
+    const emptyProbe = editorEmptyExpression(site.editorSelector);
+    let sent = false;
+    if (site.sendSelector) {
+      sent = await clickElement(client, site.sendSelector).catch(() => false);
+      if (sent) sent = await pollTrue(client, emptyProbe, 4e3);
+    }
+    if (!sent) {
+      await pressEnter(client);
+      sent = await pollTrue(client, emptyProbe, 3e3);
+    }
+    if (!sent) throw new VisionError(`${site.label}\u6D88\u606F\u6CA1\u53D1\u51FA\u53BB\uFF08\u8F93\u5165\u6846\u91CC\u8FD8\u7559\u7740\u5B57\uFF09\uFF1A\u524D\u7AEF\u53EF\u80FD\u6539\u7248\uFF0C\u6216\u8FD9\u9897\u8D26\u53F7\u88AB\u9650\u5236\u4E86`, 0);
+    let lastText = "";
+    let stableSince = 0;
+    let truncated = false;
+    const answerDeadline = Date.now() + answerBudgetMs(options.timeoutMs);
+    while (Date.now() < answerDeadline) {
+      await wait2(500);
+      const answer = await readAnswer(client, site.answerSelectors, options.prompt);
+      const busy = await stillBusy(client, site.busySelectors);
+      if (answer.text !== lastText) {
+        lastText = answer.text;
+        stableSince = Date.now();
+        continue;
+      }
+      if (lastText !== "" && !busy && Date.now() - stableSince > 1200) break;
+    }
+    if (lastText === "") {
+      const shot = path.join(os.tmpdir(), `dafeiyu-webvision-${site.id}-${Date.now()}.png`);
+      await client.screenshot(shot);
+      throw new VisionError(`${site.label}\u6CA1\u6709\u8FD4\u56DE\u53EF\u8BFB\u7684\u56DE\u7B54\uFF08\u7B49\u4E86 ${Math.round((Date.now() - startedAt) / 1e3)} \u79D2\uFF09\u3002\u622A\u56FE\uFF1A${shot}`, 0);
+    }
+    if (Date.now() >= answerDeadline) truncated = true;
+    log("\u7F51\u9875\u7248\u8BC6\u56FE\u5B8C\u6210", { site: site.id, chars: lastText.length, elapsedMs: Date.now() - startedAt });
+    return { text: lastText, truncated, elapsedMs: Date.now() - startedAt };
+  } finally {
+    try {
+      fs.unlinkSync(imageFile);
+    } catch {
+    }
+  }
+}
+async function probeLogin(client, site) {
+  await client.goto(site.loginUrl);
+  const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25e3);
+  if (!ready) return { loggedIn: false, url: site.loginUrl };
+  const loggedIn = await client.evaluate(site.loginProbe).catch(() => false);
+  const url = await client.evaluate("location.href").catch(() => site.loginUrl);
+  return { loggedIn: !!loggedIn, url };
+}
+
+// src/vision/web/index.ts
+function webProfileDir(dshHome, site) {
+  return path2.join(dshHome, "storages", "dsh-remote-dafeiyu", "webvision", site);
+}
+var runtimes = /* @__PURE__ */ new Map();
+var MAX_QUEUE = 2;
+function runtimeOf(site) {
+  let runtime = runtimes.get(site);
+  if (!runtime) {
+    runtime = { chain: Promise.resolve(), pending: 0, lastUsed: 0 };
+    runtimes.set(site, runtime);
+  }
+  return runtime;
+}
+function scheduleIdleClose(site, options) {
+  const runtime = runtimeOf(site);
+  if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
+  const idleMs = options.idleMs ?? 5 * 6e4;
+  runtime.idleTimer = setTimeout(() => {
+    void closeSite(site, options.log);
+  }, idleMs);
+  runtime.idleTimer.unref?.();
+}
+async function closeSite(site, log) {
+  const runtime = runtimes.get(site);
+  if (!runtime) return;
+  if (runtime.idleTimer) {
+    clearTimeout(runtime.idleTimer);
+    runtime.idleTimer = void 0;
+  }
+  const client = runtime.client;
+  runtime.client = void 0;
+  if (client) {
+    log?.("\u5173\u95ED\u7F51\u9875\u7248\u6D4F\u89C8\u5668", { site });
+    await client.close().catch(() => void 0);
+  }
+}
+async function closeAll(log) {
+  for (const site of runtimes.keys()) await closeSite(site, log);
+}
+async function ensureBrowser(site, options, headless) {
+  const runtime = runtimeOf(site);
+  if (runtime.client && runtime.headless === headless) {
+    runtime.lastUsed = Date.now();
+    return runtime.client;
+  }
+  if (runtime.client) await closeSite(site, options.log);
+  const profileDir = webProfileDir(options.dshHome, site);
+  fs2.mkdirSync(profileDir, { recursive: true });
+  const client = await launchCdpBrowser({
+    profileDir,
+    headless,
+    log: options.log
+  });
+  runtime.client = client;
+  runtime.headless = headless;
+  runtime.lastUsed = Date.now();
+  return client;
+}
+async function recognizeViaWeb(site, input, options) {
+  const runtime = runtimeOf(site);
+  if (runtime.pending >= MAX_QUEUE) {
+    throw new VisionError(`${SITES[site].label}\u8FD8\u5728\u5904\u7406\u4E0A\u4E00\u4E2A\u8BF7\u6C42\uFF08\u7F51\u9875\u7248\u4E00\u6B21\u53EA\u80FD\u8DD1\u4E00\u4E2A\uFF09\uFF0C\u7B49\u5B83\u7B54\u5B8C\u518D\u8BD5`, 429);
+  }
+  runtime.pending += 1;
+  const gap = Math.max(0, (options.minGapMs ?? 5e3) - (Date.now() - runtime.lastUsed));
+  const task = runtime.chain.catch(() => void 0).then(async () => {
+    if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+    const client = await ensureBrowser(site, options, options.headless !== false);
+    try {
+      return await askSite(client, SITES[site], {
+        base64: input.base64,
+        mime: input.mime,
+        prompt: input.prompt,
+        timeoutMs: input.timeoutMs,
+        log: options.log
+      });
+    } finally {
+      runtime.lastUsed = Date.now();
+      scheduleIdleClose(site, options);
+    }
+  }).finally(() => {
+    runtime.pending = Math.max(0, runtime.pending - 1);
+  });
+  runtime.chain = task.catch(() => void 0);
+  return task;
+}
+async function loginSite(site, options) {
+  const runtime = runtimeOf(site);
+  const alreadyBusy = runtime.client !== void 0 || runtime.pending > 0;
+  if (alreadyBusy) await closeSite(site, options.log);
+  const client = await ensureBrowser(site, options, false);
+  const startedAt = Date.now();
+  const deadline = Date.now() + (options.waitMs ?? 18e4);
+  try {
+    await client.goto(SITES[site].loginUrl);
+    let loggedIn = false;
+    while (Date.now() < deadline) {
+      loggedIn = await client.evaluate(SITES[site].loginProbe).catch(() => false);
+      if (loggedIn) break;
+      await new Promise((resolve) => setTimeout(resolve, 2e3));
+    }
+    runtime.lastUsed = Date.now();
+    scheduleIdleClose(site, { ...options, idleMs: 12e4 });
+    return { loggedIn, waitedMs: Date.now() - startedAt };
+  } catch (error) {
+    await closeSite(site, options.log);
+    throw error;
+  }
+}
+async function webStatus(site, options) {
+  const profileDir = webProfileDir(options.dshHome, site);
+  const base = { site, label: SITES[site].label, profileDir, profileExists: fs2.existsSync(profileDir) };
+  try {
+    const client = await ensureBrowser(site, options, true);
+    const probe = await probeLogin(client, SITES[site]);
+    scheduleIdleClose(site, options);
+    return { ...base, loggedIn: probe.loggedIn, url: probe.url };
+  } catch (error) {
+    return { ...base, loggedIn: false, error: String(error?.message ?? error) };
+  }
+}
+
+// src/vision/service.ts
 var MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+function assertUsable(config, image) {
+  if (!config.enabled) {
+    throw new VisionError("\u8BC6\u56FE\u672A\u5F00\u542F\uFF1A\u8BBE\u7F6E \u2192 \u5927\u80A5\u9C7C \u2192 \u4EBA\u8BBE \u2192 \u8BC6\u56FE\uFF0C\u6253\u5F00\u603B\u5F00\u5173", 0);
+  }
+  if (image.base64 === "") throw new VisionError("\u56FE\u7247\u5185\u5BB9\u4E3A\u7A7A", 0);
+  if (image.base64.length * 0.75 > MAX_IMAGE_BYTES) throw new VisionError("\u56FE\u7247\u592A\u5927\uFF08\u4E0A\u9650 20MB\uFF09\uFF0C\u5148\u538B\u7F29\u518D\u53D1", 0);
+}
+async function recognizeViaBrowser(config, image, dshHome, log) {
+  assertUsable(config, image);
+  const protocol = resolveProtocol(config);
+  if (!isWebProtocol(protocol)) throw new VisionError("\u5F53\u524D\u534F\u8BAE\u4E0D\u662F\u7F51\u9875\u7248", 0);
+  const site = webSiteOf(protocol);
+  const prompt = typeof image.prompt === "string" && image.prompt.trim() !== "" ? image.prompt.trim() : config.prompt;
+  const result = await recognizeViaWeb(
+    site,
+    { base64: image.base64, mime: image.mime, prompt, timeoutMs: config.timeoutMs },
+    { dshHome, headless: config.webHeadless, log }
+  );
+  return result.truncated ? `${result.text}
+
+\uFF08\u7F51\u9875\u7248\u751F\u6210\u8D85\u65F6\u88AB\u622A\u65AD\uFF1A\u4EE5\u4E0A\u662F\u5DF2\u751F\u6210\u7684\u90E8\u5206\uFF0C\u53EF\u52A0\u5927\u8D85\u65F6\u6216\u91CD\u8BD5\uFF09` : result.text;
+}
 function visionDir(dshHome) {
-  return path.join(dshHome, "storages", "dsh-remote-dafeiyu");
+  return path3.join(dshHome, "storages", "dsh-remote-dafeiyu");
 }
 function visionConfigFile(dshHome) {
-  return path.join(visionDir(dshHome), "vision.json");
+  return path3.join(visionDir(dshHome), "vision.json");
 }
 function readVisionConfig(file) {
   try {
-    const raw = fs.readFileSync(file, "utf8");
+    const raw = fs3.readFileSync(file, "utf8");
     return normalizeVisionConfig(JSON.parse(raw));
   } catch {
     return { ...DEFAULT_VISION_CONFIG };
@@ -498,11 +1285,11 @@ function readVisionConfig(file) {
 }
 function writeVisionConfig(file, config) {
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs3.mkdirSync(path3.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}
+    fs3.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}
 `, "utf8");
-    fs.renameSync(tmp, file);
+    fs3.renameSync(tmp, file);
     return true;
   } catch {
     return false;
@@ -513,14 +1300,10 @@ function errorSnippet(body) {
   return text.length > 240 ? `${text.slice(0, 240)}\u2026` : text;
 }
 async function recognize(config, image) {
-  if (!config.enabled) {
-    throw new VisionError("\u8BC6\u56FE\u672A\u5F00\u542F\uFF1A\u8BBE\u7F6E \u2192 \u5927\u80A5\u9C7C \u2192 \u4EBA\u8BBE \u2192 \u8BC6\u56FE\uFF0C\u6253\u5F00\u603B\u5F00\u5173", 0);
-  }
+  assertUsable(config, image);
   if (config.apiKey.trim() === "") {
     throw new VisionError("\u8BC6\u56FE\u8FD8\u6CA1\u914D\u7F6E API Key\uFF1A\u8BBE\u7F6E \u2192 \u5927\u80A5\u9C7C \u2192 \u4EBA\u8BBE \u2192 \u8BC6\u56FE\u91CC\u586B\u5916\u6302\u89C6\u89C9\u6A21\u578B\u7684 key", 0);
   }
-  if (image.base64 === "") throw new VisionError("\u56FE\u7247\u5185\u5BB9\u4E3A\u7A7A", 0);
-  if (image.base64.length * 0.75 > MAX_IMAGE_BYTES) throw new VisionError("\u56FE\u7247\u592A\u5927\uFF08\u4E0A\u9650 20MB\uFF09\uFF0C\u5148\u538B\u7F29\u518D\u53D1", 0);
   const prepared = buildRequest(config, image);
   let response;
   try {
@@ -573,7 +1356,7 @@ async function listModels(config) {
     throw new VisionError(`\u6A21\u578B\u5217\u8868\u89E3\u6790\u5931\u8D25\uFF1A${errorSnippet(raw)}`, response.status);
   }
 }
-function createVisionService(dshHome) {
+function createVisionService(dshHome, log) {
   const dir = visionDir(dshHome);
   const configFile = visionConfigFile(dshHome);
   let config = readVisionConfig(configFile);
@@ -591,15 +1374,22 @@ function createVisionService(dshHome) {
       return { ok: true, config: toView(config) };
     },
     enabled: () => config.enabled,
-    recognize: (image) => recognize(config, image),
+    recognize: (image) => isWebProtocol(resolveProtocol(config)) ? recognizeViaBrowser(config, image, dshHome, log) : recognize(config, image),
     listModels: () => listModels(config),
-    describe: () => ({
-      enabled: config.enabled,
-      protocol: resolveProtocol(config),
-      configured: config.apiKey !== "",
-      apiKeyHint: redactKey(config.apiKey),
-      model: config.model
-    })
+    webStatus: (site) => webStatus(site, { dshHome, headless: config.webHeadless, log }),
+    webLogin: (site, waitMs) => loginSite(site, { dshHome, headless: false, waitMs, log }),
+    dispose: () => closeAll(log),
+    describe: () => {
+      const protocol = resolveProtocol(config);
+      return {
+        enabled: config.enabled,
+        protocol,
+        webSite: isWebProtocol(protocol) ? webSiteOf(protocol) : null,
+        configured: isWebProtocol(protocol) ? true : config.apiKey !== "",
+        apiKeyHint: redactKey(config.apiKey),
+        model: config.model
+      };
+    }
   };
 }
 
@@ -611,7 +1401,7 @@ var GUIDANCE = [
   "\u7528\u6237\u5982\u679C\u628A\u56FE\u7247\u76F4\u63A5\u8D34\u8FDB\u804A\u5929\uFF0C\u4F60\u4F1A\u6536\u5230\u4E00\u6761\u4EE5\u300C\u3010\u56FE\u7247\u8BC6\u522B\u3011\u300D\u5F00\u5934\u7684\u6587\u672C\u2014\u2014\u90A3\u662F\u522B\u4EBA\u66FF\u4F60\u770B\u8FC7\u7684\u7ED3\u679C\uFF0C\u76F4\u63A5\u57FA\u4E8E\u5B83\u56DE\u7B54\uFF0C**\u4E0D\u8981\u58F0\u79F0\u4F60\u770B\u5230\u4E86\u539F\u56FE**\u3002"
 ].join("\n");
 function startVision(ctx, deps) {
-  const service = createVisionService(deps.dshHome);
+  const service = createVisionService(deps.dshHome, deps.log);
   const probe = {};
   let web;
   let unregister;
@@ -728,6 +1518,7 @@ function startVision(ctx, deps) {
     } catch {
     }
     if (started) deps.log("\u8BC6\u56FE\u8DEF\u7531\u5DF2\u505C");
+    void service.dispose().catch(() => void 0);
   };
   return {
     stop,
@@ -784,19 +1575,19 @@ function recognizeImageTool(service) {
 }
 
 // src/xyq/start.ts
-import path5 from "node:path";
+import path7 from "node:path";
 
 // src/xyq/config.ts
-import fs2 from "node:fs";
-import path3 from "node:path";
+import fs4 from "node:fs";
+import path5 from "node:path";
 
 // src/paths.ts
-import path2 from "node:path";
+import path4 from "node:path";
 function resolveDshHome(env = process.env) {
   const explicit = (env.DSH_HOME ?? "").trim();
   if (explicit !== "") return explicit;
   const home = (env.USERPROFILE ?? env.HOME ?? "").trim();
-  return home === "" ? "" : path2.join(home, ".dsh");
+  return home === "" ? "" : path4.join(home, ".dsh");
 }
 
 // src/xyq/config.ts
@@ -811,7 +1602,7 @@ var DEFAULTS = {
   freedom: "explicit"
 };
 function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)) {
-  return path3.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
+  return path5.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
 }
 function clampInt(value, min, max, fallback) {
   const num = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
@@ -839,7 +1630,7 @@ function normalizeXyqConfig(raw) {
 }
 function readXyqConfig(file) {
   try {
-    return normalizeXyqConfig(JSON.parse(fs2.readFileSync(file, "utf8")));
+    return normalizeXyqConfig(JSON.parse(fs4.readFileSync(file, "utf8")));
   } catch {
     return { ...DEFAULTS, budget: { ...DEFAULTS.budget } };
   }
@@ -847,11 +1638,11 @@ function readXyqConfig(file) {
 function writeXyqConfig(file, patch) {
   const next = normalizeXyqConfig({ ...readXyqConfig(file), ...patch });
   try {
-    fs2.mkdirSync(path3.dirname(file), { recursive: true });
+    fs4.mkdirSync(path5.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs2.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
+    fs4.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
 `, "utf8");
-    fs2.renameSync(tmp, file);
+    fs4.renameSync(tmp, file);
   } catch {
   }
   return next;
@@ -1282,8 +2073,8 @@ function xyqGenerateHandler(deps) {
       const model = typeof body.model === "string" ? body.model.trim() : "";
       if (prompt === "" || model === "") return json2(response, 400, { ok: false, error: "prompt \u4E0E model \u5FC5\u586B" });
       try {
-        const { mkdirSync } = await import("node:fs");
-        mkdirSync(deps.outDir, { recursive: true });
+        const { mkdirSync: mkdirSync2 } = await import("node:fs");
+        mkdirSync2(deps.outDir, { recursive: true });
       } catch {
       }
       const sessionKey = typeof body.sessionKey === "string" && body.sessionKey !== "" ? body.sessionKey : "xyq-panel";
@@ -1336,14 +2127,14 @@ function xyqFileHandler(deps) {
     const url = new URL(request.url ?? "/", "http://localhost");
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
-    const path6 = await import("node:path");
-    const fs4 = await import("node:fs");
-    const resolved = path6.resolve(target);
-    const root = path6.resolve(deps.outDir);
-    if (!resolved.startsWith(root + path6.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
+    const path8 = await import("node:path");
+    const fs6 = await import("node:fs");
+    const resolved = path8.resolve(target);
+    const root = path8.resolve(deps.outDir);
+    if (!resolved.startsWith(root + path8.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
-      const data = fs4.readFileSync(resolved);
-      const ext = path6.extname(resolved).toLowerCase();
+      const data = fs6.readFileSync(resolved);
+      const ext = path8.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
       if (request.method === "HEAD") response.end();
@@ -1474,10 +2265,10 @@ function xyqTools(service) {
 }
 
 // src/xyq/cli.ts
-import { spawn } from "node:child_process";
-import fs3 from "node:fs";
-import os from "node:os";
-import path4 from "node:path";
+import { spawn as spawn2 } from "node:child_process";
+import fs5 from "node:fs";
+import os2 from "node:os";
+import path6 from "node:path";
 function platformDir() {
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   if (process.platform === "win32") return `win32-${arch}`;
@@ -1487,25 +2278,25 @@ function platformDir() {
 function binaryName() {
   return process.platform === "win32" ? "pippit-tool-cli.exe" : "pippit-tool-cli";
 }
-function cachedCliCandidates(home = os.homedir()) {
-  const base = path4.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
+function cachedCliCandidates(home = os2.homedir()) {
+  const base = path6.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
   return [
-    path4.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
-    path4.join(base, "node_modules", ".bin", binaryName())
+    path6.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
+    path6.join(base, "node_modules", ".bin", binaryName())
   ];
 }
-function ensureCliScript(home = os.homedir()) {
-  return path4.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
+function ensureCliScript(home = os2.homedir()) {
+  return path6.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
 }
 var defaultCliRunner = (args, options) => new Promise((resolve) => {
-  const child = spawn(cliPathForRun(args), args.slice(1), {
+  const child = spawn2(cliPathForRun(args), args.slice(1), {
     env: { ...process.env, ...options.env },
     windowsHide: true,
     // 同 sprite/browser.ts 的理由：**别继承宿主的工作目录**。
     // 子进程以某个目录为 cwd 时，Windows 不允许把那个目录改名；DSH 自更新恰恰要把
     // `D:\FeiYu` 改成 `D:\FeiYu.old-*`，一个还活着的子进程就能让安装器连试 10 次
     // `error 32` 后放弃（2026-11-12 现场就是这样）。CLI 跑完就退，但别赌它来得及。
-    cwd: os.tmpdir()
+    cwd: os2.tmpdir()
   });
   let stdout = "";
   let stderr = "";
@@ -1536,9 +2327,9 @@ function cliPathForRun(args) {
   return args[0] ?? "";
 }
 async function installCli(run, options = {}) {
-  const home = options.home ?? os.homedir();
+  const home = options.home ?? os2.homedir();
   const script = ensureCliScript(home);
-  if (!fs3.existsSync(script)) return void 0;
+  if (!fs5.existsSync(script)) return void 0;
   const result = await run([process.execPath, script], { env: {}, timeoutMs: options.timeoutMs ?? 3e5 });
   const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -1551,13 +2342,13 @@ async function installCli(run, options = {}) {
   return void 0;
 }
 async function resolveCliPath(run, options = {}) {
-  const home = options.home ?? os.homedir();
+  const home = options.home ?? os2.homedir();
   for (const candidate of cachedCliCandidates(home)) {
-    if (fs3.existsSync(candidate)) return candidate;
+    if (fs5.existsSync(candidate)) return candidate;
   }
   const installed = await installCli(run, { home });
-  if (installed !== void 0 && fs3.existsSync(installed)) {
-    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path4.basename(installed) });
+  if (installed !== void 0 && fs5.existsSync(installed)) {
+    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path6.basename(installed) });
     return installed;
   }
   return void 0;
@@ -1589,7 +2380,7 @@ function startXyq(ctx, deps) {
   let unregister;
   let started = false;
   let stopped = false;
-  const outDir = path5.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
+  const outDir = path7.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const routeDeps = { service, outDir, log: deps.log };
   const tryStart = () => {
     if (started || stopped) return;
@@ -1605,7 +2396,7 @@ function startXyq(ctx, deps) {
         [XYQ_RESULT_ROUTE, xyqResultHandler(routeDeps)],
         [XYQ_FILE_ROUTE, xyqFileHandler(routeDeps)]
       ];
-      for (const [path6, handler] of registers) disposers.push(web.register({ kind: "exact", path: path6, handler }));
+      for (const [path8, handler] of registers) disposers.push(web.register({ kind: "exact", path: path8, handler }));
       unregister = () => {
         for (const dispose of disposers.splice(0)) dispose();
       };

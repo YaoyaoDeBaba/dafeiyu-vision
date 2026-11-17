@@ -41,6 +41,8 @@ export interface VisionConfigView {
   responsePath: string
   apiKeySet: boolean
   apiKeyHint: string
+  /** 仅网页版协议：识图时要不要弹真窗口（默认无头）。 */
+  webHeadless?: boolean
 }
 
 export interface VisionPanelDeps {
@@ -65,7 +67,14 @@ const PROTOCOLS: Array<[string, string]> = [
   ['anthropic', 'Anthropic（/v1/messages）'],
   ['gemini', 'Gemini（generateContent）'],
   ['custom', '自定义模板'],
+  ['web-doubao', '网页版豆包（免 key，需登录）'],
+  ['web-gemini', '网页版 Gemini（免 key，需登录）'],
 ]
+
+/** 是不是「走浏览器」的协议（免 key 那一类）。 */
+export function isWebProtocolId(protocol: unknown): boolean {
+  return protocol === 'web-doubao' || protocol === 'web-gemini'
+}
 
 /**
  * 协议 id → 人话。**状态卡与配置下拉共用这一份**（两处各写一份必然漂）。
@@ -134,6 +143,7 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
           timeoutMs: cfg.timeoutMs,
           requestTemplate: cfg.requestTemplate,
           responsePath: cfg.responsePath,
+          webHeadless: cfg.webHeadless !== false,
         }
         // 空串 = 不改 key（密码框不显示已存的值）
         if (apiKey.trim() !== '') payload.apiKey = apiKey.trim()
@@ -206,12 +216,26 @@ export function buildVisionPanel(deps: VisionPanelDeps): (() => unknown) | undef
           ] }),
         ] }),
         h('p', { style: hintStyle, children: '大肥鱼没有视觉，需要外挂一个视觉模型（OpenAI / Anthropic / Gemini 兼容接口都行）。填好后在聊天页右下角点鲸鱼按钮发图。' }),
+        isWebProtocolId(cfg.protocol)
+          ? h('p', { style: hintStyle, children: '网页版模式不用填接口地址和密钥：它拿本机浏览器里已登录的网页版去识图。先去下面「网页版登录」里登一次。' })
+          : null,
         h('div', { style: colsStyle, children: [
           fieldGroup('接口地址（打到 /v1 这一层）', h('input', { style: fieldStyle, value: cfg.apiBase, onChange: (event: Event) => patch({ apiBase: (event.target as HTMLInputElement).value }) })),
           fieldGroup('API Key', h('input', { style: fieldStyle, type: 'password', value: apiKey, placeholder: keyPlaceholder, onChange: (event: Event) => setApiKey((event.target as HTMLInputElement).value) })),
           fieldGroup('模型名', h('input', { style: fieldStyle, value: cfg.model, placeholder: 'gpt-4o-mini / qwen-vl-max / claude-…', onChange: (event: Event) => patch({ model: (event.target as HTMLInputElement).value }) })),
           fieldGroup('协议', h('select', { style: fieldStyle, value: cfg.protocol, onChange: (event: Event) => patch({ protocol: (event.target as HTMLSelectElement).value }), children: PROTOCOLS.map(([value, label]) => h('option', { key: value, value, children: label })) })),
         ] }),
+        isWebProtocolId(cfg.protocol)
+          ? h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }, children: [
+              h('input', {
+                type: 'checkbox',
+                checked: cfg.webHeadless === false,
+                style: { accentColor: 'var(--dsw-alias-brand-primary, #247bbf)' },
+                onChange: (event: Event) => patch({ webHeadless: !(event.target as HTMLInputElement).checked }),
+              }),
+              '识图时弹出浏览器窗口（默认无头；被风控挡住时才需要勾上）',
+            ] })
+          : null,
         fieldGroup('识图提示词（告诉外挂模型怎么描述图片）', h('textarea', { style: { ...fieldStyle, minHeight: '72px', resize: 'vertical' }, rows: 3, value: cfg.prompt, onChange: (event: Event) => patch({ prompt: (event.target as HTMLTextAreaElement).value }) })),
         h('div', { style: rowStyle, children: [
           button(h, '保存', () => void save(), { kind: 'primary', disabled: busy }),

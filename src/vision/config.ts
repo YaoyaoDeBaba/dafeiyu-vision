@@ -13,8 +13,34 @@
  * 4. 任何失败都收敛成带说明的错误，绝不静默吞掉——「识图不上」必须有可查的原因。
  */
 
-/** 协议。`auto` 按 apiBase 猜，猜错时用户可在设置页手动指定。 */
-export type VisionProtocol = 'auto' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'gemini' | 'custom'
+/**
+ * 协议。`auto` 按 apiBase 猜，猜错时用户可在设置页手动指定。
+ *
+ * `web-doubao` / `web-gemini`（0.1.3 新增）不是 HTTP 协议：它们**不用 key**，
+ * 而是拿本机浏览器里已登录的网页版去识图（见 `web/`）。这两者不吃 `apiBase` / `apiKey`，
+ * 只吃 `webHeadless`。
+ */
+export type VisionProtocol =
+  | 'auto'
+  | 'openai-chat'
+  | 'openai-responses'
+  | 'anthropic'
+  | 'gemini'
+  | 'custom'
+  | 'web-doubao'
+  | 'web-gemini'
+
+/** 走浏览器（网页版）的协议。 */
+export type WebVisionProtocol = 'web-doubao' | 'web-gemini'
+
+export function isWebProtocol(protocol: VisionProtocol): protocol is WebVisionProtocol {
+  return protocol === 'web-doubao' || protocol === 'web-gemini'
+}
+
+/** 网页版协议 → 站点 id。 */
+export function webSiteOf(protocol: WebVisionProtocol): 'doubao' | 'gemini' {
+  return protocol === 'web-doubao' ? 'doubao' : 'gemini'
+}
 
 export interface VisionConfig {
   /** 总开关。关掉时：不注册工具、不注入提示词段、路由只读配置。 */
@@ -31,6 +57,11 @@ export interface VisionConfig {
   requestTemplate: string
   /** 仅 `custom`：从响应 JSON 取文本的点号路径，如 `choices.0.message.content`。 */
   responsePath: string
+  /**
+   * 仅网页版协议：识图时用不用无头浏览器。
+   * 默认 true。个别网络/风控环境下网页版会要求有头窗口，那时改成 false（会弹出真窗口）。
+   */
+  webHeadless: boolean
 }
 
 export const DEFAULT_VISION_PROMPT =
@@ -49,6 +80,7 @@ export const DEFAULT_VISION_CONFIG: VisionConfig = {
   timeoutMs: 60_000,
   requestTemplate: '',
   responsePath: '',
+  webHeadless: true,
 }
 
 /** 设置页看到的配置：key 打码。 */
@@ -75,12 +107,22 @@ export function toView(config: VisionConfig): VisionConfigView {
     timeoutMs: config.timeoutMs,
     requestTemplate: config.requestTemplate,
     responsePath: config.responsePath,
+    webHeadless: config.webHeadless,
     apiKeySet: config.apiKey !== '',
     apiKeyHint: redactKey(config.apiKey),
   }
 }
 
-const PROTOCOLS: readonly VisionProtocol[] = ['auto', 'openai-chat', 'openai-responses', 'anthropic', 'gemini', 'custom']
+const PROTOCOLS: readonly VisionProtocol[] = [
+  'auto',
+  'openai-chat',
+  'openai-responses',
+  'anthropic',
+  'gemini',
+  'custom',
+  'web-doubao',
+  'web-gemini',
+]
 
 function cleanString(value: unknown, fallback: string, max: number): string {
   if (typeof value !== 'string') return fallback
@@ -107,11 +149,12 @@ export function normalizeVisionConfig(input: unknown, base: VisionConfig = DEFAU
     timeoutMs: timeout,
     requestTemplate: cleanString(raw.requestTemplate, base.requestTemplate, 8_000),
     responsePath: cleanString(raw.responsePath, base.responsePath, 200),
+    webHeadless: typeof raw.webHeadless === 'boolean' ? raw.webHeadless : base.webHeadless,
   }
 }
 
-// ── 按 apiBase 猜协议（与 dsh-vision 同一套判据）──────────────────────
-export function detectProtocol(apiBase: string): Exclude<VisionProtocol, 'auto' | 'custom'> {
+// ── 按 apiBase 猜协议（与 dsh-vision 同一套判据；网页版协议不参与猜）────────
+export function detectProtocol(apiBase: string): Exclude<VisionProtocol, 'auto' | 'custom' | WebVisionProtocol> {
   const lower = String(apiBase ?? '').toLowerCase()
   if (lower.includes('anthropic')) return 'anthropic'
   if (lower.includes('generativelanguage') || lower.includes('googleapis') || lower.includes('gemini')) return 'gemini'

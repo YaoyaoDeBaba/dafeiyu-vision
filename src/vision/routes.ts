@@ -17,6 +17,14 @@ import { VisionError } from './protocols.js'
 export const VISION_CONFIG_ROUTE = '/api/dsh-remote-dafeiyu/vision/config'
 export const VISION_RECOGNIZE_ROUTE = '/api/dsh-remote-dafeiyu/vision/recognize'
 export const VISION_MODELS_ROUTE = '/api/dsh-remote-dafeiyu/vision/models'
+/** 网页版（免 key）：探登录态。 */
+export const VISION_WEB_STATUS_ROUTE = '/api/dsh-remote-dafeiyu/vision/web/status'
+/** 网页版（免 key）：开有头窗口让用户登录。 */
+export const VISION_WEB_LOGIN_ROUTE = '/api/dsh-remote-dafeiyu/vision/web/login'
+
+/** 登录态缓存：探一次要起浏览器（几秒），设置页会频繁刷，别每次都真跑。 */
+const statusCache = new Map<string, { at: number; value: Record<string, unknown> }>()
+const STATUS_TTL_MS = 60_000
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024
 
@@ -165,8 +173,107 @@ export function visionModelsHandler(deps: VisionRouteDeps) {
   }
 }
 
-/** 注册三条路由并返回注销函数（与 `registerPillRoutes` 同款：一起挂、一起回滚）。 */
-export function registerVisionRoutes(
+const WEB_SITES = ['doubao', 'gemini'] as const
+type WebSite = (typeof WEB_SITES)[number]
+
+function parseWebSite(value: unknown): WebSite | undefined {
+  return typeof value === 'string' && (WEB_SITES as readonly string[]).includes(value) ? (value as WebSite) : undefined
+}
+
+/**
+ * 网页版登录态：`GET /vision/web/status?site=doubao|gemini|both[&fresh=1]`。
+ * 探一次要起无头浏览器（3~8 秒），所以结果缓存 60 秒；`fresh=1` 强制重探。
+ */
+export function visionWebStatusHandler(deps: VisionRouteDeps) {
+  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const denied = rejected(request)
+    if (denied) {
+      json(response, 403, { ok: false, error: denied })
+      return
+    }
+    if (request.method !== 'GET' && request.method !== 'POST') {
+      json(response, 405, { ok: false, error: '只支持 GET / POST' })
+      return
+    }
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    const raw = (url.searchParams.get('site') ?? 'both').toLowerCase()
+    const fresh = url.searchParams.get('fresh') === '1'
+    const sites: WebSite[] = raw === 'both' ? [...WEB_SITES] : (() => {
+      const one = parseWebSite(raw)
+      return one ? [one] : []
+    })()
+    if (sites.length === 0) {
+      json(response, 400, { ok: false, error: `site 只能是 ${WEB_SITES.join(' / ')} / both` })
+      return
+    }
+    const results: Array<Record<string, unknown>> = []
+    for (const site of sites) {
+      const cached = statusCache.get(site)
+      if (!fresh && cached && Date.now() - cached.at < STATUS_TTL_MS) {
+        results.push({ ...cached.value, cached: true })
+        continue
+      }
+      try {
+        const value = (await deps.service.webStatus(site)) as Record<string, unknown>
+        statusCache.set(site, { at: Date.now(), value })
+        results.push({ ...value, cached: false })
+      } catch (error) {
+        results.push({ site, label: site, loggedIn: false, error: String((error as Error)?.message ?? error) })
+      }
+    }
+    json(response, 200, { ok: true, sites: results })
+  }
+}
+
+/**
+ * 网页版登录：`POST /vision/web/login {site, waitMs?}`。
+ * 会**弹一个有头浏览器窗口**（这是必须的：无头窗口没法登 Google/字节），等用户登完。
+ * 默认最多等 150 秒；超时返回 `loggedIn:false` 而不是报错（用户可能只是慢）。
+ */
+export function visionWebLoginHandler(deps: VisionRouteDeps) {
+  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const denied = rejected(request)
+    if (denied) {
+      json(response, 403, { ok: false, error: denied })
+      return
+    }
+    if (request.method !== 'POST') {
+      json(response, 405, { ok: false, error: '只支持 POST' })
+      return
+    }
+    const body = await readBody(request)
+    if (!body.ok) {
+      json(response, body.status, { ok: false, error: body.error })
+      return
+    }
+    let parsed: { site?: unknown; waitMs?: unknown } = {}
+    try {
+      parsed = (body.text === '' ? {} : JSON.parse(body.text)) as typeof parsed
+    } catch {
+      json(response, 400, { ok: false, error: '请求体不是合法 JSON' })
+      return
+    }
+    const site = parseWebSite(parsed.site)
+    if (!site) {
+      json(response, 400, { ok: false, error: `site 必须是 ${WEB_SITES.join(' / ')}` })
+      return
+    }
+    const waitMs = typeof parsed.waitMs === 'number' && Number.isFinite(parsed.waitMs)
+      ? Math.min(Math.max(Math.round(parsed.waitMs), 30_000), 300_000)
+      : 150_000
+    try {
+      deps.log('打开网页版登录窗口', { site, waitMs })
+      const result = await deps.service.webLogin(site, waitMs)
+      statusCache.delete(site)
+      deps.log('网页版登录结果', { site, loggedIn: result.loggedIn })
+      json(response, 200, { ok: true, site, ...result })
+    } catch (error) {
+      json(response, 500, { ok: false, site, error: String((error as Error)?.message ?? error) })
+    }
+  }
+}
+
+/** 注册路由并返回注销函数（与 `registerPillRoutes` 同款：一起挂、一起回滚）。 */export function registerVisionRoutes(
   webServer: { register(route: { kind: 'exact'; path: string; handler: (request: IncomingMessage, response: ServerResponse) => unknown }): () => void },
   deps: VisionRouteDeps,
 ): () => void {
@@ -174,6 +281,8 @@ export function registerVisionRoutes(
     { kind: 'exact' as const, path: VISION_CONFIG_ROUTE, handler: visionConfigHandler(deps) },
     { kind: 'exact' as const, path: VISION_RECOGNIZE_ROUTE, handler: visionRecognizeHandler(deps) },
     { kind: 'exact' as const, path: VISION_MODELS_ROUTE, handler: visionModelsHandler(deps) },
+    { kind: 'exact' as const, path: VISION_WEB_STATUS_ROUTE, handler: visionWebStatusHandler(deps) },
+    { kind: 'exact' as const, path: VISION_WEB_LOGIN_ROUTE, handler: visionWebLoginHandler(deps) },
   ]
   const off: Array<() => void> = []
   const wrapped = definitions.map((definition) => ({

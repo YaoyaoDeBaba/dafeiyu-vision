@@ -41,7 +41,7 @@ export function startVision(
   ctx: LooseContext,
   deps: { dshHome: string; log: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void },
 ): VisionHandle {
-  const service = createVisionService(deps.dshHome)
+  const service = createVisionService(deps.dshHome, deps.log)
   const probe: Record<string, string> = {}
   let web: Registerable | undefined
   let unregister: (() => void) | undefined
@@ -172,6 +172,8 @@ export function startVision(
       /* 宿主可能已经先一步把 webServer 拆了 */
     }
     if (started) deps.log('识图路由已停')
+    // 网页版浏览器是子进程，卸载时必须一起收掉，否则会留孤儿窗口/端口
+    void service.dispose().catch(() => undefined)
   }
 
   return {

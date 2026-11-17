@@ -28,7 +28,7 @@
  * 同上：宿主没有任何"识图历史"接口（只有三条：config / recognize / models）。
  * 卡留着是让用户知道"这里将来会有什么"，但**不编记录**，并写清为什么没有。
  */
-import { VISION_BASE, VISION_RECOGNIZE_ROUTE, callJson } from './host-api.js'
+import { VISION_BASE, VISION_RECOGNIZE_ROUTE, VISION_WEB_LOGIN_ROUTE, VISION_WEB_STATUS_ROUTE, callJson } from './host-api.js'
 import { buildVisionPanel, fileToBase64, protocolLabel, type VisionConfigView } from './vision-panel.js'
 import {
   button,
@@ -275,6 +275,82 @@ export function buildVisionTab(deps: VisionTabDeps): (() => unknown) | undefined
     ])
   }
 
+  /**
+   * ⑤ 网页版（免 key）：拿本机浏览器里已登录的豆包 / Gemini 识图。
+   *
+   * 为什么单开一张卡：它跟「接口地址 + 密钥」是两套完全不同的前提（一个要 key、
+   * 一个要登录态），混在一块最容易出的错是"协议选了网页版却还在等用户填 key"。
+   */
+  function WebLoginCard(): unknown {
+    const [sites, setSites] = useS<Array<Record<string, unknown>>>([])
+    const [note, setNote] = useS<string>('正在读登录态…')
+    const [busy, setBusy] = useS<string>('')
+
+    const load = async (fresh: boolean): Promise<void> => {
+      try {
+        const result = await callJson(`${VISION_WEB_STATUS_ROUTE}?site=both${fresh ? '&fresh=1' : ''}`, undefined, 60_000)
+        if (result.ok === true && Array.isArray(result.sites)) {
+          setSites(result.sites as Array<Record<string, unknown>>)
+          const logged = (result.sites as Array<Record<string, unknown>>).filter((row) => row.loggedIn === true).length
+          setNote(`已登录 ${logged} / ${(result.sites as unknown[]).length}`)
+        } else {
+          setSites([])
+          setNote(`读取失败：${String(result.error ?? '宿主没有返回登录态')}`)
+        }
+      } catch (error) {
+        setSites([])
+        setNote(`读取失败：${String((error as Error)?.message ?? error)}`)
+      }
+    }
+
+    useEffect?.(() => {
+      void load(false)
+    }, [])
+
+    const login = async (site: string, label: string): Promise<void> => {
+      setBusy(site)
+      setNote(`已弹出 ${label} 登录窗口，请在里面完成登录（最多等 150 秒）…`)
+      try {
+        const result = await callJson(VISION_WEB_LOGIN_ROUTE, { site, waitMs: 150_000 }, 180_000)
+        if (result.loggedIn === true) {
+          setNote(`${label} 登录成功（登录态已留在本机，以后不用再登）`)
+        } else {
+          setNote(`${label} 还没登上：窗口里没检出登录态。可以再点一次，或先关掉那个窗口重来。`)
+        }
+        await load(true)
+      } catch (error) {
+        setNote(`登录失败：${String((error as Error)?.message ?? error)}`)
+      } finally {
+        setBusy('')
+      }
+    }
+
+    const rows = sites.length === 0
+      ? [h('p', { style: emptyStyle, children: note })]
+      : sites.map((row) => {
+          const site = String(row.site ?? '')
+          const label = String(row.label ?? site)
+          const loggedIn = row.loggedIn === true
+          return item(h, [
+            itemTitle(h, label),
+            itemSub(h, loggedIn ? '已登录，可以直接用来识图' : (typeof row.error === 'string' && row.error !== '' ? `未登录 · ${row.error}` : '未登录：点右边那颗按钮登一次')),
+          ], [
+            tag(h, loggedIn ? '已登录' : '未登录', loggedIn ? 'ok' : 'warn'),
+            button(h, loggedIn ? '重新登录' : `登录 ${label}`, () => void login(site, label), { disabled: busy !== '', kind: loggedIn ? undefined : 'primary' }),
+          ])
+        })
+
+    return card(h, '网页版（免 key）', [
+      h('p', { style: notesStyle, children: '不想配 API key 就用这个：拿本机浏览器里已登录的网页版豆包 / Gemini 识图。登录一次长期有效（cookie 存在本机 profile 里，不会上传）。' }),
+      ...rows,
+      note === '' ? null : h('p', { style: hintStyle, children: note }),
+      h('div', { style: rowStyle, children: [
+        button(h, '刷新登录态', () => void load(true), { disabled: busy !== '' }),
+      ] }),
+      h('p', { style: hintStyle, children: '注意：网页版一次只能跑一张图（8~20 秒），偶发验证码时需要你在弹出的窗口里点一下。' }),
+    ])
+  }
+
   return function VisionTab(): unknown {
     const children: unknown[] = [h(VisionStatusCard, {})]
     /*
@@ -284,7 +360,7 @@ export function buildVisionTab(deps: VisionTabDeps): (() => unknown) | undefined
      * 组件元素会被替换成它的返回值，挂在元素上的 props 那时就没了。
      */
     if (configBlock) children.push(card(h, '模型配置', [h('div', { 'data-block': 'vision-config', children: [h(configBlock, {})] })]))
-    children.push(h(VisionTryCard, {}), h(VisionHistoryCard, {}))
+    children.push(h(VisionTryCard, {}), h(WebLoginCard, {}), h(VisionHistoryCard, {}))
     return h('div', { 'data-panel': 'vision', style: columnStyle, children })
   }
 }
