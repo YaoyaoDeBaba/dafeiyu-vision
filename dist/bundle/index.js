@@ -623,7 +623,7 @@ import fs2 from "node:fs";
 import path2 from "node:path";
 
 // src/vision/web/driver.ts
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import { existsSync, mkdirSync } from "node:fs";
@@ -679,6 +679,35 @@ function killTree(pid, log) {
     log("\u6740\u6D4F\u89C8\u5668\u8FDB\u7A0B\u6811\u5931\u8D25", { pid, reason: String(error?.message ?? error) });
   }
 }
+async function killBrowsersUsingProfile(profileDir, log) {
+  if (!existsSync(profileDir)) return 0;
+  const escaped = profileDir.replace(/'/g, "''");
+  const script = [
+    "$target = '" + escaped + "'",
+    `$hit = Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='chrome.exe'" |`,
+    "  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($target) }",
+    "$n = 0",
+    // 2>$null：`taskkill /T` 会对着"已经被父进程带走的孩子"报 not found，别让它刷屏
+    "foreach ($p in $hit) { try { taskkill /PID $p.ProcessId /T /F 2>$null | Out-Null; $n++ } catch { } }",
+    "Write-Output $n"
+  ].join("\n");
+  try {
+    if (process.platform === "win32") {
+      const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        encoding: "utf8",
+        timeout: 15e3,
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+      const killed = Number.parseInt(String(out).trim(), 10);
+      if (Number.isFinite(killed) && killed > 0) log("\u6E05\u6389\u4E86\u5360\u7740 profile \u7684\u6D4F\u89C8\u5668\u8FDB\u7A0B", { profileDir, killed });
+      return Number.isFinite(killed) ? killed : 0;
+    }
+    execFileSync("pkill", ["-f", profileDir], { stdio: "ignore", timeout: 1e4 });
+    return 1;
+  } catch {
+    return 0;
+  }
+}
 function startParentWatchdog(browserPid, log) {
   const timer = setInterval(() => {
     try {
@@ -703,6 +732,10 @@ async function launchCdpBrowser(options) {
   }
   const headless = options.headless !== false;
   mkdirSync(options.profileDir, { recursive: true });
+  if (options.killStale !== false) {
+    const killed = await killBrowsersUsingProfile(options.profileDir, log);
+    if (killed > 0) await wait(400);
+  }
   const port = await freePort();
   const args = [
     headless ? "--headless=new" : "--start-maximized",
@@ -713,6 +746,12 @@ async function launchCdpBrowser(options) {
     // 那个内部页会抢走 page target（见下面 isHttpPage 的注释）。
     "--disable-sync",
     "--no-service-autorun",
+    // 上次被强杀（或插件被强退）后，Edge 会弹「恢复页面」气泡并做会话恢复，启动会拖到十几秒。
+    // 登录是"点了就要看见窗口"的动作，这几个开关把那段省掉。
+    "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
+    "--disable-restore-session-state",
+    "--noerrdialogs",
     "--disable-features=Translate,OptimizationHints,msSyncConsent,SigninInterception",
     "--mute-audio",
     "--hide-scrollbars",
@@ -755,11 +794,11 @@ async function launchCdpBrowser(options) {
   const readyTimeout = options.readyTimeoutMs ?? 25e3;
   const deadline = Date.now() + readyTimeout;
   let target;
-  const isHttpPage = (row) => row.type === "page" && typeof row.webSocketDebuggerUrl === "string" && /^https?:/i.test(row.url ?? "");
+  const isUsablePage = (row) => row.type === "page" && typeof row.webSocketDebuggerUrl === "string" && (row.url === "about:blank" || /^https?:/i.test(row.url ?? ""));
   while (Date.now() < deadline) {
     try {
       const list = await getJson(`http://127.0.0.1:${port}/json/list`);
-      target = list.find(isHttpPage);
+      target = list.find(isUsablePage);
       if (target) break;
       if (Date.now() > deadline - readyTimeout / 2) {
         const any = list.find((row) => row.type === "page" && typeof row.webSocketDebuggerUrl === "string");
@@ -775,7 +814,7 @@ async function launchCdpBrowser(options) {
   if (!target?.webSocketDebuggerUrl) {
     await cleanup();
     throw new Error(
-      `\u6D4F\u89C8\u5668\u6CA1\u8D77\u6765\uFF08\u7AEF\u53E3 ${port}\uFF0C\u7B49\u4E86 ${Math.round(readyTimeout / 1e3)} \u79D2\uFF09\u3002\u5E38\u89C1\u539F\u56E0\uFF1A\u8FD9\u4E2A profile \u5DF2\u7ECF\u88AB\u53E6\u4E00\u4E2A\u7A97\u53E3\u5360\u7740\uFF08\u5148\u5168\u90E8\u5173\u6389\u518D\u8BD5\uFF09`
+      `\u6D4F\u89C8\u5668\u6CA1\u8D77\u6765\uFF08\u7AEF\u53E3 ${port}\uFF0C\u7B49\u4E86 ${Math.round(readyTimeout / 1e3)} \u79D2\uFF09\u3002\u5E38\u89C1\u539F\u56E0\uFF1A\u8FD9\u4E2A profile\uFF08${options.profileDir}\uFF09\u8FD8\u88AB\u522B\u7684 Edge \u8FDB\u7A0B\u5360\u7740\u2014\u2014\u63D2\u4EF6\u5DF2\u5C1D\u8BD5\u81EA\u52A8\u6E05\u7406\uFF1B\u4ECD\u5931\u8D25\u5C31\u624B\u52A8\u5173\u6389\u6240\u6709\u540C\u540D\u7A97\u53E3\u518D\u8BD5\uFF0C\u6216\u5220\u6389\u8BE5 profile \u76EE\u5F55\u8BA9\u5B83\u91CD\u5EFA`
     );
   }
   const WebSocketCtor = globalThis.WebSocket;
@@ -864,6 +903,10 @@ async function launchCdpBrowser(options) {
         if (state === "complete") return;
         await wait(300);
       }
+    },
+    async bringToFront() {
+      await call("Page.bringToFront", {}, 5e3).catch(() => void 0);
+      await evaluate("(() => { try { window.focus(); return true } catch { return false } })()", 5e3).catch(() => false);
     },
     async screenshot(file) {
       try {
@@ -1273,24 +1316,31 @@ async function recognizeViaWeb(site, input, options) {
   runtime.chain = task.catch(() => void 0);
   return task;
 }
+async function runLoginSession(client, site, options = {}) {
+  const startedAt = Date.now();
+  const deadline = Date.now() + (options.waitMs ?? 18e4);
+  await client.goto(SITES[site].loginUrl);
+  await client.bringToFront();
+  options.log?.("\u767B\u5F55\u7A97\u53E3\u5DF2\u5F39\u51FA\u5E76\u7F6E\u9876", { site });
+  let loggedIn = false;
+  while (Date.now() < deadline) {
+    loggedIn = await client.evaluate(SITES[site].loginProbe).catch(() => false);
+    if (loggedIn) break;
+    await new Promise((resolve) => setTimeout(resolve, 2e3));
+  }
+  await client.bringToFront().catch(() => void 0);
+  return { loggedIn, waitedMs: Date.now() - startedAt };
+}
 async function loginSite(site, options) {
   const runtime = runtimeOf(site);
   const alreadyBusy = runtime.client !== void 0 || runtime.pending > 0;
   if (alreadyBusy) await closeSite(site, options.log);
   const client = await ensureBrowser(site, options, false);
-  const startedAt = Date.now();
-  const deadline = Date.now() + (options.waitMs ?? 18e4);
   try {
-    await client.goto(SITES[site].loginUrl);
-    let loggedIn = false;
-    while (Date.now() < deadline) {
-      loggedIn = await client.evaluate(SITES[site].loginProbe).catch(() => false);
-      if (loggedIn) break;
-      await new Promise((resolve) => setTimeout(resolve, 2e3));
-    }
+    const result = await runLoginSession(client, site, { waitMs: options.waitMs, log: options.log });
     runtime.lastUsed = Date.now();
     scheduleIdleClose(site, { ...options, idleMs: 12e4 });
-    return { loggedIn, waitedMs: Date.now() - startedAt };
+    return result;
   } catch (error) {
     await closeSite(site, options.log);
     throw error;

@@ -19,7 +19,7 @@
  * - 关闭时**杀整棵树**，`child.kill()` 只杀 broker 会留一堆 renderer 占端口；
  * - 父进程消失 → 看门狗杀树（否则宿主崩了浏览器会一直挂着）。
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -36,6 +36,8 @@ export interface CdpClient {
   call<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T>
   /** 导航并等 `readyState === 'complete'`（等不到不抛，交给后续判据）。 */
   goto(url: string, timeoutMs?: number): Promise<void>
+  /** 把窗口顶到最前（有头窗口默认开在别人的窗口后面，用户会以为"没弹出来"）。 */
+  bringToFront(): Promise<void>
   /** 截图落盘（出错留证据用；写不进去不抛）。 */
   screenshot(file: string): Promise<void>
   close(): Promise<void>
@@ -50,6 +52,11 @@ export interface LaunchOptions {
   executable?: string
   /** 等 CDP 起来的上限。 */
   readyTimeoutMs?: number
+  /**
+   * 起之前先杀掉占着这个 profile 的浏览器（默认 true）。
+   * 不清的话新进程会把活交给已有实例后自己退出 —— 表现是"窗口不出现"。
+   */
+  killStale?: boolean
   log?: WebLog
 }
 
@@ -112,6 +119,48 @@ function killTree(pid: number, log: WebLog): void {
   }
 }
 
+/**
+ * 杀掉**用着这个 profile 的浏览器进程**（不管是哪个进程起的）。
+ *
+ * 为什么必须有它（2026-11-18 用户实测）：
+ * 同一个 `--user-data-dir` 只能有一个浏览器实例。如果已经有一个（很可能是上次识图留下的
+ * **无头**实例）占着 profile，新起的进程会把请求交给已有实例后**自己退出**——
+ * 于是"点登录 → 什么都没弹出来"，CDP 也永远等不到 page target。
+ * 表现就是「拉不起网页」，而且报错还只说"浏览器没起来"，根本没指向真正原因。
+ *
+ * 判据是命令行里含 `--user-data-dir=<这个 profile>`；只杀匹配的，不动用户自己的 Edge。
+ */
+export async function killBrowsersUsingProfile(profileDir: string, log: WebLog): Promise<number> {
+  if (!existsSync(profileDir)) return 0
+  const escaped = profileDir.replace(/'/g, "''")
+  const script = [
+    "$target = '" + escaped + "'",
+    "$hit = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' OR Name='chrome.exe'\" |",
+    '  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($target) }',
+    '$n = 0',
+    // 2>$null：`taskkill /T` 会对着"已经被父进程带走的孩子"报 not found，别让它刷屏
+    'foreach ($p in $hit) { try { taskkill /PID $p.ProcessId /T /F 2>$null | Out-Null; $n++ } catch { } }',
+    'Write-Output $n',
+  ].join('\n')
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      const killed = Number.parseInt(String(out).trim(), 10)
+      if (Number.isFinite(killed) && killed > 0) log('清掉了占着 profile 的浏览器进程', { profileDir, killed })
+      return Number.isFinite(killed) ? killed : 0
+    }
+    execFileSync('pkill', ['-f', profileDir], { stdio: 'ignore', timeout: 10_000 })
+    return 1
+  } catch {
+    /* pkill 没匹配到会返回非 0；powershell 失败也别影响主流程 */
+    return 0
+  }
+}
+
 /** 父进程消失就杀浏览器（宿主崩溃后别留孤儿窗口/端口）。 */
 function startParentWatchdog(browserPid: number, log: WebLog): NodeJS.Timeout {
   const timer = setInterval(() => {
@@ -151,6 +200,12 @@ export async function launchCdpBrowser(options: LaunchOptions): Promise<CdpClien
   }
   const headless = options.headless !== false
   mkdirSync(options.profileDir, { recursive: true })
+  // 先清掉占着这个 profile 的实例（多半是上次识图留下的无头浏览器）。
+  // 不清的话新进程会"把活交给它然后自己退出"，窗口永远不出现，见 killBrowsersUsingProfile 的注释。
+  if (options.killStale !== false) {
+    const killed = await killBrowsersUsingProfile(options.profileDir, log)
+    if (killed > 0) await wait(400)
+  }
   const port = await freePort()
   const args = [
     headless ? '--headless=new' : '--start-maximized',
@@ -161,6 +216,12 @@ export async function launchCdpBrowser(options: LaunchOptions): Promise<CdpClien
     // 那个内部页会抢走 page target（见下面 isHttpPage 的注释）。
     '--disable-sync',
     '--no-service-autorun',
+    // 上次被强杀（或插件被强退）后，Edge 会弹「恢复页面」气泡并做会话恢复，启动会拖到十几秒。
+    // 登录是"点了就要看见窗口"的动作，这几个开关把那段省掉。
+    '--disable-session-crashed-bubble',
+    '--hide-crash-restore-bubble',
+    '--disable-restore-session-state',
+    '--noerrdialogs',
     '--disable-features=Translate,OptimizationHints,msSyncConsent,SigninInterception',
     '--mute-audio',
     '--hide-scrollbars',
@@ -213,19 +274,22 @@ export async function launchCdpBrowser(options: LaunchOptions): Promise<CdpClien
   const deadline = Date.now() + readyTimeout
   let target: PageTarget | undefined
   /**
-   * 只认 http(s) 的页面：Edge 首次启动一个新 profile 时会弹出
-   * `edge://sync-confirmation-dialog/`（"我们在你所有设备上同步浏览数据"）这类内部页，
-   * 它也是 `type: 'page'`，抢在真页面前面。2026-11-17 实测踩到过：
-   * 连上去 evaluate 的是那个对话框，永远找不到输入框。
+   * 认哪些 page target：
+   * - `about:blank` —— 我们自己传的启动页，**必须立刻认**（否则要干等到超时的一半，白等十几秒）；
+   * - `http(s)` —— 正常页面；
+   * - 其余 `edge://` / `chrome://` 内部页（首次启动的同步确认对话框就是 `edge://sync-confirmation-dialog/`）
+   *   **不认**，它能抢在真页面前面。
    */
-  const isHttpPage = (row: PageTarget): boolean =>
-    row.type === 'page' && typeof row.webSocketDebuggerUrl === 'string' && /^https?:/i.test(row.url ?? '')
+  const isUsablePage = (row: PageTarget): boolean =>
+    row.type === 'page' &&
+    typeof row.webSocketDebuggerUrl === 'string' &&
+    (row.url === 'about:blank' || /^https?:/i.test(row.url ?? ''))
   while (Date.now() < deadline) {
     try {
       const list = (await getJson(`http://127.0.0.1:${port}/json/list`)) as PageTarget[]
-      target = list.find(isHttpPage)
+      target = list.find(isUsablePage)
       if (target) break
-      // 过半还没 http 页，就退回"随便一个 page"（至少能连上并自己导航）
+      // 兜底：过半还没可用页，就随便挑一个 page（至少能连上并自己导航）
       if (Date.now() > deadline - readyTimeout / 2) {
         const any = list.find((row) => row.type === 'page' && typeof row.webSocketDebuggerUrl === 'string')
         if (any) {
@@ -242,7 +306,8 @@ export async function launchCdpBrowser(options: LaunchOptions): Promise<CdpClien
     await cleanup()
     throw new Error(
       `浏览器没起来（端口 ${port}，等了 ${Math.round(readyTimeout / 1000)} 秒）。` +
-        '常见原因：这个 profile 已经被另一个窗口占着（先全部关掉再试）',
+        `常见原因：这个 profile（${options.profileDir}）还被别的 Edge 进程占着——` +
+        '插件已尝试自动清理；仍失败就手动关掉所有同名窗口再试，或删掉该 profile 目录让它重建',
     )
   }
 
@@ -349,6 +414,11 @@ export async function launchCdpBrowser(options: LaunchOptions): Promise<CdpClien
         if (state === 'complete') return
         await wait(300)
       }
+    },
+    async bringToFront() {
+      // 有头窗口默认开在别的窗口后面：用户看不到就以为"没弹出来"。
+      await call('Page.bringToFront', {}, 5_000).catch(() => undefined)
+      await evaluate<boolean>('(() => { try { window.focus(); return true } catch { return false } })()', 5_000).catch(() => false)
     },
     async screenshot(file) {
       try {

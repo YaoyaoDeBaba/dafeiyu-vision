@@ -25,6 +25,8 @@ import {
 } from '../src/vision/routes.js'
 import type { CdpClient } from '../src/vision/web/driver.js'
 import { askSite, answerBudgetMs, DOUBAO, GEMINI, probeLogin, writeTempImage } from '../src/vision/web/sites.js'
+import { killBrowsersUsingProfile } from '../src/vision/web/driver.js'
+import { runLoginSession } from '../src/vision/web/index.js'
 
 // ── 假 CDP 客户端 ────────────────────────────────────────────────────────────
 
@@ -120,6 +122,9 @@ function fakeClient(options: FakeOptions = {}): FakeClient {
     },
     async goto(url: string): Promise<void> {
       calls.push(`goto:${url}`)
+    },
+    async bringToFront(): Promise<void> {
+      calls.push('bringToFront')
     },
     async screenshot(): Promise<void> {
       calls.push('screenshot')
@@ -292,6 +297,23 @@ test('单一 + 白嫖豆包 ⇒ 只走网页版，一次都不碰 API', async ()
   } finally {
     globalThis.fetch = original
   }
+})
+
+test('登录会话：进站点后必须把窗口顶到前台（否则用户以为"什么都没弹"）', async () => {
+  const client = fakeClient({ loggedIn: true })
+  const result = await runLoginSession(client, 'doubao' as never, { waitMs: 5_000 })
+  assert.equal(result.loggedIn, true)
+  const order = client.calls.filter((call) => call.startsWith('goto:') || call === 'bringToFront')
+  assert.ok(order.length >= 2, `至少要 goto + bringToFront：${order.join(' → ')}`)
+  assert.equal(order[0]?.startsWith('goto:'), true)
+  assert.equal(order[1], 'bringToFront')
+  // 登录后还会再顶一次（用户可能接着在新页面操作）
+  assert.ok(client.calls.filter((call) => call === 'bringToFront').length >= 2)
+})
+
+test('清 profile 占用：目录不存在时直接返回 0（不跑进程扫描）', async () => {
+  const killed = await killBrowsersUsingProfile(path.join(tmpdir(), 'dafeiyu-no-such-profile'), () => undefined)
+  assert.equal(killed, 0)
 })
 
 test('落盘：临时图片按 mime 取扩展名、内容是真的 base64 解出来的', () => {

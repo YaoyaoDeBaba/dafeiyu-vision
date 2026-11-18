@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 47 条判据
+npm test            # 构建 + 50 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -326,3 +326,30 @@ assets/skills/dafeiyu-vision/
   —— 两份文案必漂，所以只有一份真源。
 
 `package.json` 的 `files` 已加 `assets`：**别把它删了**，删了装到用户机器上就没有指南了。
+
+### 7.9 登录窗口"拉不起来"的三个原因（0.1.7 修）
+
+用户反馈「点登录什么都没弹出来」，查下来是三个叠加的问题：
+
+1. **每个 page target 都干等 12.5 秒**：驱动只认 `http(s)` 页面，而我们自己传的启动页是
+   `about:blank`——它永远不算数，于是一路等到"超时的一半"才兜底连接。
+   表现：窗口开了但**先白屏十几秒**才出页面（用户以为坏了）。
+   修法：`about:blank` 立刻认，`edge://` / `chrome://` 内部页仍然不认。
+   **实测 launch 从 13.7s 降到 1.5s。**
+2. **没有置顶**：有头窗口默认开在 DSH 主窗口后面，用户根本看不见。
+   修法：进站点后 `Page.bringToFront()` + `window.focus()`，登录成功后再顶一次。
+3. **profile 被上次的无头实例占着**：同一个 `--user-data-dir` 只能有一个实例，
+   新进程会把请求交给已有实例然后自己退出 —— 于是"点登录，一个窗口都不出现"，CDP 也永远等不到页面。
+   修法：起浏览器前先清掉"命令行里含这个 profile"的 msedge/chrome 进程
+   （`killBrowsersUsingProfile`，PowerShell `Get-CimInstance`，约 0.8 秒；只杀这个 profile 的，不碰用户自己的 Edge）。
+
+另外顺手关掉了 Edge 的「上次没有正常关闭」气泡（`--disable-session-crashed-bubble`
+`--hide-crash-restore-bubble` `--disable-restore-session-state`），避免强杀后启动变慢。
+
+真机验收（`lab/e2e-login.mjs`：先故意起一个无头实例占住 profile，再调登录）：
+
+```
+[login] 清掉了占着 profile 的浏览器进程 {"killed":9}
+[login] 登录窗口已弹出并置顶 {"site":"doubao"}
+⇒ 结果 {"loggedIn":true,"waitedMs":1379}  用时 8.8s
+```

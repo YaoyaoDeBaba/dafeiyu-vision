@@ -139,6 +139,33 @@ export async function recognizeViaWeb(
 }
 
 /**
+ * 登录会话本体：进站点 → **把窗口顶到前台** → 轮询登录态。
+ *
+ * 单独抽出来是为了能测（假 CdpClient 就能钉住"必须置顶"这条，2026-11-18 的故障正是没置顶：
+ * 窗口开了但被 DSH 主窗口盖住，用户以为"什么都没弹"）。
+ */
+export async function runLoginSession(
+  client: CdpClient,
+  site: WebSiteId,
+  options: { waitMs?: number; log?: WebLog } = {},
+): Promise<{ loggedIn: boolean; waitedMs: number }> {
+  const startedAt = Date.now()
+  const deadline = Date.now() + (options.waitMs ?? 180_000)
+  await client.goto(SITES[site].loginUrl)
+  await client.bringToFront()
+  options.log?.('登录窗口已弹出并置顶', { site })
+  let loggedIn = false
+  while (Date.now() < deadline) {
+    loggedIn = await client.evaluate<boolean>(SITES[site].loginProbe).catch(() => false)
+    if (loggedIn) break
+    await new Promise((resolve) => setTimeout(resolve, 2_000))
+  }
+  // 登录后可能跳到别的页，再顶一次（用户要接着在新页面里操作）
+  await client.bringToFront().catch(() => undefined)
+  return { loggedIn, waitedMs: Date.now() - startedAt }
+}
+
+/**
  * 登录：必须有头窗口，等用户点到登录成功为止。
  * 认证信息会留在 profile 里；成功后窗口留 2 分钟（用户可能还想检查一下），然后自关。
  */
@@ -151,19 +178,11 @@ export async function loginSite(
   if (alreadyBusy) await closeSite(site, options.log)
 
   const client = await ensureBrowser(site, options, false)
-  const startedAt = Date.now()
-  const deadline = Date.now() + (options.waitMs ?? 180_000)
   try {
-    await client.goto(SITES[site].loginUrl)
-    let loggedIn = false
-    while (Date.now() < deadline) {
-      loggedIn = await client.evaluate<boolean>(SITES[site].loginProbe).catch(() => false)
-      if (loggedIn) break
-      await new Promise((resolve) => setTimeout(resolve, 2_000))
-    }
+    const result = await runLoginSession(client, site, { waitMs: options.waitMs, log: options.log })
     runtime.lastUsed = Date.now()
     scheduleIdleClose(site, { ...options, idleMs: 120_000 })
-    return { loggedIn, waitedMs: Date.now() - startedAt }
+    return result
   } catch (error) {
     await closeSite(site, options.log)
     throw error
