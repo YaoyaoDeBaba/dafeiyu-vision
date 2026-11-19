@@ -938,6 +938,7 @@ var DOUBAO = {
   homeUrl: "https://www.doubao.com/chat/",
   loginUrl: "https://www.doubao.com/chat/",
   editorSelector: ".ProseMirror",
+  authCookies: { url: "https://www.doubao.com", names: ["sessionid", "sessionid_ss"] },
   loginProbe: `(() => {
     if (document.querySelector('[data-testid="to_login_button"]')) return false;
     if (location.search.includes('from_logout')) return false;
@@ -965,6 +966,7 @@ var GEMINI = {
   homeUrl: "https://gemini.google.com/app",
   loginUrl: "https://gemini.google.com/app",
   editorSelector: ".ql-editor",
+  authCookies: { url: "https://gemini.google.com", names: ["__Secure-1PSID", "SID", "__Secure-3PSID"] },
   loginProbe: `(() => {
     const buttons = Array.from(document.querySelectorAll('button'));
     if (buttons.some((b) => (b.getAttribute('aria-label') || '').trim() === '\u767B\u5F55')) return false;
@@ -999,6 +1001,24 @@ var GEMINI = {
   sendSelector: 'button[aria-label="\u53D1\u9001"], button[aria-label*="Send"], button[aria-label*="\u53D1\u9001"]'
 };
 var SITES = { doubao: DOUBAO, gemini: GEMINI };
+async function isLoggedIn(client, site) {
+  if (site.authCookies) {
+    try {
+      const result = await client.call(
+        "Network.getCookies",
+        { urls: [site.authCookies.url] },
+        1e4
+      );
+      if (Array.isArray(result?.cookies)) {
+        return site.authCookies.names.some(
+          (name) => (result.cookies ?? []).some((cookie) => cookie?.name === name && (cookie?.value ?? "") !== "")
+        );
+      }
+    } catch {
+    }
+  }
+  return client.evaluate(site.loginProbe).catch(() => false);
+}
 var wait2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function pollTrue(client, expression, timeoutMs, stepMs = 300) {
   const deadline = Date.now() + timeoutMs;
@@ -1111,7 +1131,7 @@ async function askSite(client, site, options) {
   await client.goto(site.homeUrl);
   const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25e3);
   if (!ready) throw new VisionError(`${site.label}\u9875\u9762\u6CA1\u52A0\u8F7D\u51FA\u6765\uFF08\u627E\u4E0D\u5230\u8F93\u5165\u6846 ${site.editorSelector}\uFF09\uFF1A\u68C0\u67E5\u7F51\u7EDC\uFF0C\u6216\u5148\u5728\u8BBE\u7F6E\u91CC\u767B\u5F55\u4E00\u6B21`, 0);
-  const loggedIn = await client.evaluate(site.loginProbe).catch(() => false);
+  const loggedIn = await isLoggedIn(client, site);
   if (!loggedIn) throw new VisionError(NOT_LOGGED_IN_HINT(site.label), 401);
   if (site.newChat) {
     const clicked = await client.evaluate(site.newChat).catch(() => false);
@@ -1223,7 +1243,7 @@ async function probeLogin(client, site) {
   await client.goto(site.loginUrl);
   const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25e3);
   if (!ready) return { loggedIn: false, url: site.loginUrl };
-  const loggedIn = await client.evaluate(site.loginProbe).catch(() => false);
+  const loggedIn = await isLoggedIn(client, site);
   const url = await client.evaluate("location.href").catch(() => site.loginUrl);
   return { loggedIn: !!loggedIn, url };
 }
@@ -1326,7 +1346,7 @@ async function runLoginSession(client, site, options = {}) {
   if (ready) {
     let streak = 0;
     while (Date.now() < deadline) {
-      const now = await client.evaluate(SITES[site].loginProbe).catch(() => false);
+      const now = await isLoggedIn(client, SITES[site]);
       streak = now ? streak + 1 : 0;
       if (streak >= 2) {
         loggedIn = true;

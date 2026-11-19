@@ -371,3 +371,28 @@ assets/skills/dafeiyu-vision/
 
 顺带一条 0.1.7 遗留：`ensureBrowser` 以前在"无头/有头不一致"时会**重开**浏览器，
 于是"登录窗口开着时刷新一次登录态，窗口就被关掉了"。现在**有实例就复用**，绝不因为模式不一致重开。
+
+### 7.11 0.1.9：登录判据换成 cookie（DOM 判据会假阳）
+
+0.1.8 之后仍然偶发"判成已登录但其实没有"。根因在 DOM 判据本身：
+
+> 豆包首屏是**输入框先渲染、顶栏后渲染**。`to_login_button` 还没出现的那两三秒里，
+> "没看到登录按钮"被当成"已登录"—— 0.1.7 实测报过 `loggedIn:true @0.49s`，而那条 profile 明明未登录。
+
+现在的主判据是 **cookie**（`Network.getCookies`，httpOnly 也能读到）：
+
+| 站点 | 域 | 认哪些 cookie |
+|---|---|---|
+| 豆包 | `https://www.doubao.com` | `sessionid` / `sessionid_ss` |
+| Gemini | `https://gemini.google.com` | `__Secure-1PSID` / `SID` / `__Secure-3PSID` |
+
+`isLoggedIn()` 先用 cookie，拿不到 cookies 数组（老内核/桩）才退回 DOM 探针。
+`askSite` / `probeLogin` / 登录会话 / 设置卡片全部走同一个判据，不会再出现"卡片说未登录、识图却能跑"或反过来。
+
+真机验收（0.1.9，真实 profile `C:\Users\htsd\.dsh\...\webvision\doubao`）：
+
+```
+cookie: sessionid(len=32, httpOnly) / sessionid_ss / sid_tt …  → 判定：已登录 ✔
+webStatus → {"loggedIn":true}
+识图 → 24.6s，"RED CIRCLE / WORD: BANANA-4271"，会话归到项目「甲鱼乙豆」
+```

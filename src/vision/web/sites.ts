@@ -39,6 +39,15 @@ export interface WebSiteSpec {
   /** 生成中提示（出现即说明还没答完）。 */
   busySelectors: string[]
   /**
+   * 登录判据（**首选**）：`cookieUrl` 域下出现这些 cookie 名之一，才算登录。
+   *
+   * 为什么不用 DOM：0.1.7 及以前靠"没有登录按钮就算登录"，而豆包首屏是**输入框先渲染、
+   * 顶栏后渲染**——按钮还没出来那两三秒就会被判成"已登录"（2026-11-19 实测：
+   * 一条明明未登录的 profile 被判成 loggedIn:true，用户以为插件坏了）。
+   * cookie 是服务端认的证据，没法提前"没出现"。
+   */
+  authCookies?: { url: string; names: string[] }
+  /**
    * 可选：进站后先点一次「新对话」。
    *
    * 为什么需要：Gemini 的 `/app` 会**恢复上次那个对话**（URL 变成 `/app/<id>`），
@@ -69,6 +78,7 @@ export const DOUBAO: WebSiteSpec = {
   homeUrl: 'https://www.doubao.com/chat/',
   loginUrl: 'https://www.doubao.com/chat/',
   editorSelector: '.ProseMirror',
+  authCookies: { url: 'https://www.doubao.com', names: ['sessionid', 'sessionid_ss'] },
   loginProbe: `(() => {
     if (document.querySelector('[data-testid="to_login_button"]')) return false;
     if (location.search.includes('from_logout')) return false;
@@ -97,6 +107,7 @@ export const GEMINI: WebSiteSpec = {
   homeUrl: 'https://gemini.google.com/app',
   loginUrl: 'https://gemini.google.com/app',
   editorSelector: '.ql-editor',
+  authCookies: { url: 'https://gemini.google.com', names: ['__Secure-1PSID', 'SID', '__Secure-3PSID'] },
   loginProbe: `(() => {
     const buttons = Array.from(document.querySelectorAll('button'));
     if (buttons.some((b) => (b.getAttribute('aria-label') || '').trim() === '登录')) return false;
@@ -135,6 +146,33 @@ export const SITES: Record<WebSiteId, WebSiteSpec> = { doubao: DOUBAO, gemini: G
 
 export function isWebSiteId(value: unknown): value is WebSiteId {
   return value === 'doubao' || value === 'gemini'
+}
+
+/**
+ * 这个窗口**到底登录没登录**。
+ *
+ * 首选 cookie（服务端认的证据）；cookie 拿不到（老内核 / Network 域不可用）才退回 DOM 探针——
+ * DOM 探针有个天然缺陷：页面还没渲染完时"看不到登录按钮"会被当成"已登录"。
+ */
+export async function isLoggedIn(client: CdpClient, site: WebSiteSpec): Promise<boolean> {
+  if (site.authCookies) {
+    try {
+      const result = await client.call<{ cookies?: Array<{ name?: string; value?: string }> }>(
+        'Network.getCookies',
+        { urls: [site.authCookies.url] },
+        10_000,
+      )
+      // 只有真的拿到 cookies 数组才采信；拿不到（老内核 / 桩）就退回 DOM 探针
+      if (Array.isArray(result?.cookies)) {
+        return site.authCookies.names.some((name) =>
+          (result.cookies ?? []).some((cookie) => cookie?.name === name && (cookie?.value ?? '') !== ''),
+        )
+      }
+    } catch {
+      /* 拿不到 cookie 就退回 DOM */
+    }
+  }
+  return client.evaluate<boolean>(site.loginProbe).catch(() => false)
 }
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -338,7 +376,7 @@ export async function askSite(client: CdpClient, site: WebSiteSpec, options: Ask
   const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25_000)
   if (!ready) throw new VisionError(`${site.label}页面没加载出来（找不到输入框 ${site.editorSelector}）：检查网络，或先在设置里登录一次`, 0)
 
-  const loggedIn = await client.evaluate<boolean>(site.loginProbe).catch(() => false)
+  const loggedIn = await isLoggedIn(client, site)
   if (!loggedIn) throw new VisionError(NOT_LOGGED_IN_HINT(site.label), 401)
 
   // ⓪ 新对话：有的站点（Gemini）会把上次那个对话恢复出来，必须先回到空白对话
@@ -493,7 +531,7 @@ export async function probeLogin(client: CdpClient, site: WebSiteSpec): Promise<
   await client.goto(site.loginUrl)
   const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 25_000)
   if (!ready) return { loggedIn: false, url: site.loginUrl }
-  const loggedIn = await client.evaluate<boolean>(site.loginProbe).catch(() => false)
+  const loggedIn = await isLoggedIn(client, site)
   const url = await client.evaluate<string>('location.href').catch(() => site.loginUrl)
   return { loggedIn: !!loggedIn, url }
 }

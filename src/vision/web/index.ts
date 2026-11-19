@@ -9,7 +9,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { launchCdpBrowser, type CdpClient, type WebLog } from './driver.js'
-import { askSite, isWebSiteId, pollTrue, probeLogin, SITES, type AskResult, type WebSiteId } from './sites.js'
+import { askSite, isLoggedIn, isWebSiteId, pollTrue, probeLogin, SITES, type AskResult, type WebSiteId } from './sites.js'
 import { VisionError } from '../protocols.js'
 
 /** profile 目录：`<dshHome>/storages/dsh-remote-dafeiyu/webvision/<site>`（与 vision.json 同域）。 */
@@ -169,7 +169,7 @@ export async function runLoginSession(
   if (ready) {
     let streak = 0
     while (Date.now() < deadline) {
-      const now = await client.evaluate<boolean>(SITES[site].loginProbe).catch(() => false)
+      const now = await isLoggedIn(client, SITES[site])
       streak = now ? streak + 1 : 0
       if (streak >= 2) {
         loggedIn = true
