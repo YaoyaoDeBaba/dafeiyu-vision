@@ -17,7 +17,7 @@ import {
   type VisionConfigView,
 } from './config.js'
 import { buildRequest, VisionError, type ImageInput } from './protocols.js'
-import { closeAll, loginSite, recognizeViaWeb, webStatus, type WebSiteId } from './web/index.js'
+import { closeAll, generateImageViaWeb, loginSite, recognizeViaWeb, webStatus, type WebSiteId } from './web/index.js'
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -258,6 +258,8 @@ export interface VisionService {
   webStatus(site: WebSiteId): Promise<Record<string, unknown>>
   /** 网页版：开有头窗口等用户登录。 */
   webLogin(site: WebSiteId, waitMs?: number): Promise<{ loggedIn: boolean; waitedMs: number }>
+  /** 网页版：白嫖豆包生图（切「图像生成」→ 发提示词 → 下载到本地）。 */
+  generateImage(prompt: string, count?: number): Promise<{ files: string[]; elapsedMs: number; via: string }>
   /** 关掉所有网页版浏览器（插件卸载时调）。 */
   dispose(): Promise<void>
   describe(): Record<string, unknown>
@@ -290,6 +292,12 @@ export function createVisionService(
     listModels: () => listModels(config),
     webStatus: (site) => webStatus(site, { dshHome, headless: config.webHeadless, log }),
     webLogin: (site, waitMs) => loginSite(site, { dshHome, headless: false, waitMs, log }),
+    generateImage: (prompt, count) =>
+      generateImageViaWeb(
+        config.webSite,
+        { prompt, count, timeoutMs: config.timeoutMs },
+        { dshHome, headless: config.webHeadless, project: config.webProject, log },
+      ),
     dispose: () => closeAll(log),
     describe: () => {
       const plan = planRecognition(config)

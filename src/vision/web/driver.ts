@@ -209,6 +209,12 @@ export async function launchCdpBrowser(options: LaunchOptions): Promise<CdpClien
   const port = await freePort()
   const args = [
     headless ? '--headless=new' : '--start-maximized',
+    /*
+     * 无头默认视口只有 800x600，宽屏布局会被**折叠**：豆包输入框下面那排技能 chip
+     * （帮我写作 / 图像生成 / 更多技能）会收进「技能」菜单里，按文本找不到「图像生成」。
+     * 给一个接近真机的视口，布局与用户看到的一致。
+     */
+    headless ? '--window-size=1920,1080' : '',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',

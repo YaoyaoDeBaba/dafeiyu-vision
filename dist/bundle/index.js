@@ -1,5 +1,5 @@
 // src/vision/start.ts
-import path5 from "node:path";
+import path6 from "node:path";
 import { readFileSync as readFileSync2 } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -183,16 +183,16 @@ function promptOf(config, image) {
   const custom = typeof image.prompt === "string" ? image.prompt.trim() : "";
   return custom !== "" ? custom : config.prompt;
 }
-function deepGet(value, path10) {
+function deepGet(value, path11) {
   let cursor = value;
-  for (const key of path10) {
+  for (const key of path11) {
     if (cursor === null || typeof cursor !== "object") return void 0;
     cursor = cursor[key];
   }
   return cursor;
 }
-function splitPath(path10) {
-  return String(path10 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
+function splitPath(path11) {
+  return String(path11 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
 }
 function textFrom(value) {
   if (typeof value === "string") return value.trim();
@@ -615,12 +615,12 @@ function registerVisionRoutes(webServer, deps) {
 }
 
 // src/vision/service.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
+import fs4 from "node:fs";
+import path4 from "node:path";
 
 // src/vision/web/index.ts
-import fs2 from "node:fs";
-import path2 from "node:path";
+import fs3 from "node:fs";
+import path3 from "node:path";
 
 // src/vision/web/driver.ts
 import { spawn, execFileSync } from "node:child_process";
@@ -739,6 +739,12 @@ async function launchCdpBrowser(options) {
   const port = await freePort();
   const args = [
     headless ? "--headless=new" : "--start-maximized",
+    /*
+     * 无头默认视口只有 800x600，宽屏布局会被**折叠**：豆包输入框下面那排技能 chip
+     * （帮我写作 / 图像生成 / 更多技能）会收进「技能」菜单里，按文本找不到「图像生成」。
+     * 给一个接近真机的视口，布局与用户看到的一致。
+     */
+    headless ? "--window-size=1920,1080" : "",
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-background-networking",
@@ -912,8 +918,8 @@ async function launchCdpBrowser(options) {
       try {
         const shot = await call("Page.captureScreenshot", { format: "png" }, 15e3);
         if (shot?.data) {
-          const fs6 = await import("node:fs");
-          fs6.writeFileSync(file, Buffer.from(shot.data, "base64"));
+          const fs7 = await import("node:fs");
+          fs7.writeFileSync(file, Buffer.from(shot.data, "base64"));
         }
       } catch {
       }
@@ -939,6 +945,13 @@ var DOUBAO = {
   loginUrl: "https://www.doubao.com/chat/",
   editorSelector: ".ProseMirror",
   authCookies: { url: "https://www.doubao.com", names: ["sessionid", "sessionid_ss"] },
+  imageSkillChip: "\u56FE\u50CF\u751F\u6210",
+  imageSelectors: [
+    '[data-testid="receive_message"] img',
+    ".flow-markdown-body img",
+    '[data-testid="image_generated"] img',
+    'img[src*="flow-doubao"]'
+  ],
   loginProbe: `(() => {
     if (document.querySelector('[data-testid="to_login_button"]')) return false;
     if (location.search.includes('from_logout')) return false;
@@ -1002,6 +1015,7 @@ var GEMINI = {
 };
 var SITES = { doubao: DOUBAO, gemini: GEMINI };
 async function isLoggedIn(client, site) {
+  let cookieVerdict;
   if (site.authCookies) {
     try {
       const result = await client.call(
@@ -1010,13 +1024,19 @@ async function isLoggedIn(client, site) {
         1e4
       );
       if (Array.isArray(result?.cookies)) {
-        return site.authCookies.names.some(
+        cookieVerdict = site.authCookies.names.some(
           (name) => (result.cookies ?? []).some((cookie) => cookie?.name === name && (cookie?.value ?? "") !== "")
         );
       }
     } catch {
     }
   }
+  if (cookieVerdict === false) return false;
+  const settled = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 8e3);
+  if (!settled) return cookieVerdict === true;
+  const first = await client.evaluate(site.loginProbe).catch(() => cookieVerdict === true);
+  if (first) return true;
+  await wait2(1500);
   return client.evaluate(site.loginProbe).catch(() => false);
 }
 var wait2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1248,9 +1268,144 @@ async function probeLogin(client, site) {
   return { loggedIn: !!loggedIn, url };
 }
 
+// src/vision/web/image.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+var wait3 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function imageOutDir(dshHome) {
+  return path2.join(dshHome, "storages", "dsh-remote-dafeiyu", "webvision-images");
+}
+async function switchToImageSkill(client, site) {
+  const chipText = site.imageSkillChip;
+  if (!chipText) return "";
+  const direct = await clickExpression(client, `Array.from(document.querySelectorAll('button')).find((b) => (b.innerText || '').trim() === ${JSON.stringify(chipText)})`);
+  if (direct) {
+    await wait3(1200);
+    return "chip";
+  }
+  const menu = await clickExpression(client, `Array.from(document.querySelectorAll('button')).find((b) => (b.innerText || '').trim() === '\u6280\u80FD')`);
+  if (!menu) return "";
+  await wait3(1200);
+  const item = await clickExpression(client, `Array.from(document.querySelectorAll('div, button, li, [role="menuitem"], [role="option"]'))
+    .filter((el) => (el.innerText || '').trim() === ${JSON.stringify(chipText)})
+    .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]`);
+  if (!item) return "";
+  await wait3(1200);
+  return "menu";
+}
+async function readGeneratedImages(client, site) {
+  const selectors = (site.imageSelectors ?? ['[data-testid="receive_message"] img']).join(", ");
+  const raw = await client.evaluate(`(() => {
+      const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selectors)}));
+      const seen = new Set();
+      const out = [];
+      for (const img of nodes) {
+        const src = img.currentSrc || img.src || '';
+        if (!src || seen.has(src)) continue;
+        const w = img.naturalWidth || 0;
+        const h = img.naturalHeight || 0;
+        if (w < 200 || h < 200) continue;   // \u5934\u50CF/\u56FE\u6807
+        seen.add(src);
+        out.push({ src, w, h });
+      }
+      return out;
+    })()`).catch(() => []);
+  return Array.isArray(raw) ? raw : [];
+}
+async function fetchImageAsBase64(client, src) {
+  return client.evaluate(`(async () => {
+      const url = ${JSON.stringify(src)};
+      if (url.startsWith('data:')) return url.split(',')[1] || '';
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return '';
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    })()`).catch(() => "");
+}
+function extOf(buf) {
+  if (buf.length > 8 && buf[0] === 137 && buf[1] === 80) return "png";
+  if (buf.length > 3 && buf[0] === 255 && buf[1] === 216) return "jpg";
+  if (buf.length > 12 && buf.slice(8, 12).toString() === "WEBP") return "webp";
+  return "bin";
+}
+async function generateImages(client, site, outDir, options) {
+  const startedAt = Date.now();
+  const log = options.log ?? (() => void 0);
+  const prompt = String(options.prompt ?? "").trim();
+  if (prompt === "") throw new VisionError("\u751F\u56FE\u9700\u8981\u63D0\u793A\u8BCD\uFF08prompt\uFF09", 0);
+  const via = await switchToImageSkill(client, site);
+  if (via === "") {
+    throw new VisionError(
+      `${site.label}\u627E\u4E0D\u5230\u300C\u56FE\u50CF\u751F\u6210\u300D\u5165\u53E3\uFF08\u6280\u80FD chip \u548C\u300C\u6280\u80FD\u300D\u83DC\u5355\u91CC\u90FD\u6CA1\u6709\uFF09\uFF1A\u524D\u7AEF\u53EF\u80FD\u6539\u7248\uFF0C\u6216\u8FD9\u4E2A\u8D26\u53F7\u6CA1\u5F00\u751F\u56FE\u80FD\u529B`,
+      0
+    );
+  }
+  log("\u5DF2\u5207\u5230\u56FE\u50CF\u751F\u6210", { via });
+  await clearEditor(client, site.editorSelector);
+  if (!await typeInto(client, site.editorSelector, prompt)) throw new VisionError(`${site.label}\u8F93\u5165\u6846\u62FF\u4E0D\u5230\u7126\u70B9`, 0);
+  const emptyProbe = `(() => { const el = document.querySelector(${JSON.stringify(site.editorSelector)}); return el ? (el.innerText || '').trim() === '' : false })()`;
+  let sent = false;
+  if (site.sendSelector) {
+    sent = await clickElement(client, site.sendSelector).catch(() => false);
+    if (sent) sent = await pollTrue(client, emptyProbe, 4e3);
+  }
+  if (!sent) {
+    await pressEnter(client);
+    sent = await pollTrue(client, emptyProbe, 3e3);
+  }
+  if (!sent) throw new VisionError(`${site.label}\u751F\u56FE\u8BF7\u6C42\u6CA1\u53D1\u51FA\u53BB\uFF08\u8F93\u5165\u6846\u91CC\u8FD8\u7559\u7740\u5B57\uFF09`, 0);
+  log("\u751F\u56FE\u8BF7\u6C42\u5DF2\u53D1\u9001\uFF0C\u7B49\u51FA\u56FE", { prompt: prompt.slice(0, 40) });
+  const deadline = Date.now() + Math.max(options.timeoutMs ?? 18e4, 6e4);
+  const want = Math.min(Math.max(options.count ?? 1, 1), 4);
+  let images = [];
+  let lastKey = "";
+  let stableAt = 0;
+  while (Date.now() < deadline) {
+    await wait3(Math.max(200, Math.min(2500, options.settleMs ?? 2500)));
+    images = await readGeneratedImages(client, site);
+    const key = images.map((image) => image.src).join("|");
+    if (key !== lastKey) {
+      lastKey = key;
+      stableAt = Date.now();
+      continue;
+    }
+    if (images.length >= want && Date.now() - stableAt > (options.settleMs ?? 8e3)) break;
+  }
+  if (images.length === 0) {
+    const tail = await client.evaluate('(document.body.innerText || "").trim().slice(-300)').catch(() => "");
+    throw new VisionError(
+      `${site.label}\u6CA1\u6709\u51FA\u56FE\uFF08\u7B49\u4E86 ${Math.round((Date.now() - startedAt) / 1e3)} \u79D2\uFF09\u3002\u9875\u9762\u5C3E\u90E8\uFF1A${String(tail).replace(/\s+/g, " ").slice(0, 200)}`,
+      0
+    );
+  }
+  fs2.mkdirSync(outDir, { recursive: true });
+  const files = [];
+  let index = 0;
+  for (const image of images.slice(0, want)) {
+    index += 1;
+    const base64 = await fetchImageAsBase64(client, image.src);
+    if (base64 === "") {
+      log("\u4E0B\u8F7D\u5931\u8D25\uFF08\u53EF\u80FD\u662F\u7B7E\u540D URL \u8FC7\u671F\uFF09", { index, src: image.src.slice(0, 80) });
+      continue;
+    }
+    const buf = Buffer.from(base64, "base64");
+    if (buf.length === 0) continue;
+    const file = path2.join(outDir, `web-image-${Date.now()}-${index}.${extOf(buf)}`);
+    fs2.writeFileSync(file, buf);
+    files.push(file);
+    log("\u5DF2\u4FDD\u5B58\u751F\u6210\u56FE", { index, file, kb: Math.round(buf.length / 1024), w: image.w, h: image.h });
+  }
+  if (files.length === 0) {
+    throw new VisionError(`${site.label}\u51FA\u4E86 ${images.length} \u5F20\u56FE\u4F46\u4E00\u5F20\u90FD\u6CA1\u4E0B\u8F7D\u4E0B\u6765\uFF08\u7B7E\u540D URL \u53EF\u80FD\u5DF2\u8FC7\u671F\uFF09\uFF0C\u53EF\u91CD\u8BD5\u4E00\u6B21`, 0);
+  }
+  return { files, elapsedMs: Date.now() - startedAt, via };
+}
+
 // src/vision/web/index.ts
 function webProfileDir(dshHome, site) {
-  return path2.join(dshHome, "storages", "dsh-remote-dafeiyu", "webvision", site);
+  return path3.join(dshHome, "storages", "dsh-remote-dafeiyu", "webvision", site);
 }
 var runtimes = /* @__PURE__ */ new Map();
 var MAX_QUEUE = 2;
@@ -1295,7 +1450,7 @@ async function ensureBrowser(site, options, headless) {
     return runtime.client;
   }
   const profileDir = webProfileDir(options.dshHome, site);
-  fs2.mkdirSync(profileDir, { recursive: true });
+  fs3.mkdirSync(profileDir, { recursive: true });
   const client = await launchCdpBrowser({
     profileDir,
     headless,
@@ -1375,9 +1530,47 @@ async function loginSite(site, options) {
     throw error;
   }
 }
+async function generateImageViaWeb(site, input, options) {
+  const runtime = runtimeOf(site);
+  if (runtime.pending >= MAX_QUEUE) {
+    throw new VisionError(`${SITES[site].label}\u8FD8\u5728\u5904\u7406\u4E0A\u4E00\u4E2A\u8BF7\u6C42\uFF08\u7F51\u9875\u7248\u4E00\u6B21\u53EA\u80FD\u8DD1\u4E00\u4E2A\uFF09\uFF0C\u7B49\u5B83\u8DD1\u5B8C\u518D\u8BD5`, 429);
+  }
+  runtime.pending += 1;
+  const gap = Math.max(0, (options.minGapMs ?? 5e3) - (Date.now() - runtime.lastUsed));
+  const task = runtime.chain.catch(() => void 0).then(async () => {
+    if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap));
+    const client = await ensureBrowser(site, options, options.headless !== false);
+    try {
+      await client.goto(SITES[site].loginUrl);
+      const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(SITES[site].editorSelector)})`, 25e3);
+      if (!ready) throw new VisionError(`${SITES[site].label}\u9875\u9762\u6CA1\u52A0\u8F7D\u51FA\u6765\uFF08\u627E\u4E0D\u5230\u8F93\u5165\u6846\uFF09`, 0);
+      const loggedIn = await isLoggedIn(client, SITES[site]);
+      if (!loggedIn) {
+        throw new VisionError(
+          `${SITES[site].label}\u6CA1\u6709\u767B\u5F55\uFF1A\u5148\u5728\u8BBE\u7F6E\u9875\u300C\u7F51\u9875\u7248\uFF08\u514D key\uFF09\u300D\u91CC\u70B9\u300C\u767B\u5F55 ${SITES[site].label}\u300D\u767B\u4E00\u6B21`,
+          401
+        );
+      }
+      return await generateImages(client, SITES[site], imageOutDir(options.dshHome), {
+        prompt: input.prompt,
+        count: input.count,
+        timeoutMs: input.timeoutMs,
+        settleMs: input.settleMs,
+        log: options.log
+      });
+    } finally {
+      runtime.lastUsed = Date.now();
+      scheduleIdleClose(site, options);
+    }
+  }).finally(() => {
+    runtime.pending = Math.max(0, runtime.pending - 1);
+  });
+  runtime.chain = task.catch(() => void 0);
+  return task;
+}
 async function webStatus(site, options) {
   const profileDir = webProfileDir(options.dshHome, site);
-  const base = { site, label: SITES[site].label, profileDir, profileExists: fs2.existsSync(profileDir) };
+  const base = { site, label: SITES[site].label, profileDir, profileExists: fs3.existsSync(profileDir) };
   try {
     const client = await ensureBrowser(site, options, true);
     const probe = await probeLogin(client, SITES[site]);
@@ -1472,14 +1665,14 @@ async function runRecognition(config, image, deps) {
   return composeRecognition([{ label: apiLabel, result: api }]);
 }
 function visionDir(dshHome) {
-  return path3.join(dshHome, "storages", "dsh-remote-dafeiyu");
+  return path4.join(dshHome, "storages", "dsh-remote-dafeiyu");
 }
 function visionConfigFile(dshHome) {
-  return path3.join(visionDir(dshHome), "vision.json");
+  return path4.join(visionDir(dshHome), "vision.json");
 }
 function readVisionConfig(file) {
   try {
-    const raw = fs3.readFileSync(file, "utf8");
+    const raw = fs4.readFileSync(file, "utf8");
     return normalizeVisionConfig(JSON.parse(raw));
   } catch {
     return { ...DEFAULT_VISION_CONFIG };
@@ -1487,11 +1680,11 @@ function readVisionConfig(file) {
 }
 function writeVisionConfig(file, config) {
   try {
-    fs3.mkdirSync(path3.dirname(file), { recursive: true });
+    fs4.mkdirSync(path4.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs3.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}
+    fs4.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}
 `, "utf8");
-    fs3.renameSync(tmp, file);
+    fs4.renameSync(tmp, file);
     return true;
   } catch {
     return false;
@@ -1580,6 +1773,11 @@ function createVisionService(dshHome, log, deps) {
     listModels: () => listModels(config),
     webStatus: (site) => webStatus(site, { dshHome, headless: config.webHeadless, log }),
     webLogin: (site, waitMs) => loginSite(site, { dshHome, headless: false, waitMs, log }),
+    generateImage: (prompt, count) => generateImageViaWeb(
+      config.webSite,
+      { prompt, count, timeoutMs: config.timeoutMs },
+      { dshHome, headless: config.webHeadless, project: config.webProject, log }
+    ),
     dispose: () => closeAll(log),
     describe: () => {
       const plan = planRecognition(config);
@@ -1662,6 +1860,33 @@ function buildVisionTools(service, deps) {
       }
     }),
     stringTool({
+      name: "web_image_gen",
+      description: "\u7528**\u672C\u673A\u6D4F\u89C8\u5668\u91CC\u5DF2\u767B\u5F55\u7684\u7F51\u9875\u7248\u8C46\u5305**\u751F\u6210\u56FE\u7247\uFF08\u767D\u5AD6\uFF0C\u4E0D\u82B1 API key\uFF09\uFF1A\u5207\u5230\u300C\u56FE\u50CF\u751F\u6210\u300D\u2192 \u53D1\u63D0\u793A\u8BCD \u2192 \u628A\u51FA\u7684\u56FE\u4E0B\u8F7D\u5230\u672C\u5730\u3002prompt \u662F\u753B\u9762\u63CF\u8FF0\uFF08\u4E2D\u6587/\u82F1\u6587\u90FD\u884C\uFF0C\u8D8A\u5177\u4F53\u8D8A\u597D\uFF1A\u4E3B\u4F53\u3001\u98CE\u683C\u3001\u6784\u56FE\u3001\u80CC\u666F\u3001\u662F\u5426\u8981\u6587\u5B57\uFF09\uFF1Bcount \u60F3\u8981\u51E0\u5F20\uFF08\u9ED8\u8BA4 1\uFF0C\u4E0A\u9650 4\uFF09\uFF1B\u8FD4\u56DE\u672C\u5730\u6587\u4EF6\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u7528 ![\u63CF\u8FF0](\u8DEF\u5F84) \u6216 [\u63CF\u8FF0](\u8DEF\u5F84) \u5C55\u793A\u7ED9\u7528\u6237\u3002\u5355\u6B21 20~90 \u79D2\uFF1B\u6CA1\u767B\u5F55\u4F1A\u62A5\u300C\u6CA1\u6709\u767B\u5F55\u300D\uFF0C\u5148\u7528 vision_web_status / vision_web_login \u5904\u7406\u3002\u6CE8\u610F\uFF1A\u8FD9\u662F**\u751F\u56FE**\uFF0C\u4E0D\u662F\u8BC6\u56FE\uFF1B\u8981\u770B\u56FE\u8BF7\u7528 recognize_image\u3002",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "\u753B\u9762\u63CF\u8FF0\uFF08\u4E3B\u4F53 + \u98CE\u683C + \u80CC\u666F\uFF0C\u8D8A\u5177\u4F53\u8D8A\u51C6\uFF09" },
+          count: { type: "number", description: "\u60F3\u8981\u51E0\u5F20\uFF0C\u9ED8\u8BA4 1\uFF0C\u6700\u591A 4" }
+        },
+        required: ["prompt"]
+      },
+      timeoutMs: 24e4,
+      async execute(args) {
+        const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+        if (prompt === "") throw new Error("\u751F\u56FE\u9700\u8981\u63D0\u793A\u8BCD\uFF08prompt\uFF09");
+        const count = typeof args.count === "number" && Number.isFinite(args.count) ? Math.round(args.count) : 1;
+        const result = await service.generateImage(prompt, count);
+        const ignored = ignoredKeys(args, ["prompt", "count"]);
+        const lines = result.files.map((file, index) => `${index + 1}. ${file}`);
+        const body = [
+          `\u5DF2\u751F\u6210 ${result.files.length} \u5F20\uFF08\u8017\u65F6 ${(result.elapsedMs / 1e3).toFixed(1)} \u79D2\uFF0C\u5165\u53E3\uFF1A${result.via}\uFF09\uFF1A`,
+          ...lines
+        ].join("\n");
+        return ignored.length === 0 ? body : `${body}
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+      }
+    }),
+    stringTool({
       name: "vision_guide",
       description: "\u8FD4\u56DE\u300C\u5927\u80A5\u9C7C\u8BC6\u56FE\u300D\u7684\u5B8C\u6574\u4F7F\u7528\u6307\u5357\uFF08\u4E0E skill `dafeiyu-vision` \u540C\u4E00\u4EFD\u6B63\u6587\uFF09\uFF1A\u4EC0\u4E48\u65F6\u5019\u8BE5\u8C03 recognize_image\u3001\u5355\u4E00/\u590D\u5408\u6A21\u5F0F\u3001\u7F51\u9875\u7248\uFF08\u514D key\uFF09\u8981\u767B\u5F55\u3001\u62A5\u9519\u600E\u4E48\u8BFB\u3002\u4E0A\u4E0B\u6587\u91CC\u6CA1\u6709\u8BE5 skill \u65F6\u7528\u5B83\u515C\u5E95\u3002",
       parameters: { type: "object", properties: {} },
@@ -1727,7 +1952,7 @@ ${JSON.stringify(rows)}
 
 // src/vision/skill.ts
 import { cpSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import path4 from "node:path";
+import path5 from "node:path";
 var VISION_SKILL_NAME = "dafeiyu-vision";
 var SKILL_VERSION_FILE = ".dafeiyu-skill-version";
 var VISION_GUIDE_FALLBACK = [
@@ -1743,7 +1968,7 @@ function fingerprintDir(dir) {
   const walk = (rel) => {
     let entries;
     try {
-      entries = readdirSync(path4.join(dir, rel), { withFileTypes: true });
+      entries = readdirSync(path5.join(dir, rel), { withFileTypes: true });
     } catch {
       return [];
     }
@@ -1753,7 +1978,7 @@ function fingerprintDir(dir) {
       if (entry.isDirectory()) out.push(...walk(childRel));
       else {
         try {
-          out.push(`${childRel}:${statSync(path4.join(dir, childRel)).size}`);
+          out.push(`${childRel}:${statSync(path5.join(dir, childRel)).size}`);
         } catch {
           out.push(`${childRel}:?`);
         }
@@ -1766,7 +1991,7 @@ function fingerprintDir(dir) {
 function listSkillFiles(base, rel = "") {
   let entries;
   try {
-    entries = readdirSync(path4.join(base, rel), { withFileTypes: true });
+    entries = readdirSync(path5.join(base, rel), { withFileTypes: true });
   } catch {
     return [];
   }
@@ -1783,13 +2008,13 @@ function verifySkillInstall(deps) {
   const files = listSkillFiles(deps.assetsRoot);
   if (!files.includes("SKILL.md")) problems.push("\u5305\u5185\u6CA1\u6709 SKILL.md");
   for (const rel of files) {
-    const target = path4.join(deps.targetDir, rel);
+    const target = path5.join(deps.targetDir, rel);
     if (!existsSync2(target)) {
       problems.push(`\u6CA1\u94FA\u5230\uFF1A${rel}`);
       continue;
     }
     try {
-      if (!readFileSync(path4.join(deps.assetsRoot, rel)).equals(readFileSync(target))) problems.push(`\u5185\u5BB9\u4E0D\u4E00\u81F4\uFF1A${rel}`);
+      if (!readFileSync(path5.join(deps.assetsRoot, rel)).equals(readFileSync(target))) problems.push(`\u5185\u5BB9\u4E0D\u4E00\u81F4\uFF1A${rel}`);
     } catch (error) {
       problems.push(`\u8BFB\u4E0D\u51FA\u6765\uFF1A${rel}\uFF08${String(error?.message ?? error).slice(0, 60)}\uFF09`);
     }
@@ -1799,18 +2024,18 @@ function verifySkillInstall(deps) {
 function installBundledSkills(deps) {
   let entries;
   try {
-    entries = readdirSync(deps.assetsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => ({ name: entry.name, dir: path4.join(deps.assetsRoot, entry.name) })).filter((entry) => existsSync2(path4.join(entry.dir, "SKILL.md")));
+    entries = readdirSync(deps.assetsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => ({ name: entry.name, dir: path5.join(deps.assetsRoot, entry.name) })).filter((entry) => existsSync2(path5.join(entry.dir, "SKILL.md")));
   } catch (error) {
     return { ok: false, installed: [], reason: `missing-asset: ${String(error?.message ?? error).slice(0, 80)}` };
   }
   if (entries.length === 0) return { ok: false, installed: [], reason: `no-skill-under: ${deps.assetsRoot}` };
   const installed = [];
   for (const entry of entries) {
-    const target = path4.join(deps.dshHome, "skills", entry.name);
-    const stamp = path4.join(target, SKILL_VERSION_FILE);
+    const target = path5.join(deps.dshHome, "skills", entry.name);
+    const stamp = path5.join(target, SKILL_VERSION_FILE);
     try {
       if (existsSync2(stamp) && fingerprintDir(entry.dir) === fingerprintDir(target)) continue;
-      mkdirSync2(path4.dirname(target), { recursive: true });
+      mkdirSync2(path5.dirname(target), { recursive: true });
       if (existsSync2(target)) rmSync(target, { recursive: true, force: true });
       cpSync(entry.dir, target, { recursive: true });
       writeFileSync(stamp, `${deps.version}
@@ -1841,7 +2066,7 @@ var cachedBody;
 function readVisionSkillBody(assetsRoot) {
   if (cachedBody !== void 0) return cachedBody;
   try {
-    cachedBody = stripFrontmatter(readFileSync(path4.join(assetsRoot, "SKILL.md"), "utf8"));
+    cachedBody = stripFrontmatter(readFileSync(path5.join(assetsRoot, "SKILL.md"), "utf8"));
   } catch {
     cachedBody = VISION_GUIDE_FALLBACK;
   }
@@ -1859,14 +2084,14 @@ var GUIDANCE = [
 ].join("\n");
 function packageRoot() {
   try {
-    return path5.resolve(path5.dirname(fileURLToPath(import.meta.url)), "..", "..");
+    return path6.resolve(path6.dirname(fileURLToPath(import.meta.url)), "..", "..");
   } catch {
     return process.cwd();
   }
 }
 function packageVersion() {
   try {
-    const parsed = JSON.parse(readFileSync2(path5.join(packageRoot(), "package.json"), "utf8"));
+    const parsed = JSON.parse(readFileSync2(path6.join(packageRoot(), "package.json"), "utf8"));
     return typeof parsed.version === "string" ? parsed.version : "unknown";
   } catch {
     return "unknown";
@@ -1875,7 +2100,7 @@ function packageVersion() {
 function startVision(ctx, deps) {
   const service = createVisionService(deps.dshHome, deps.log);
   const probe = {};
-  const skillAssetsRoot = path5.join(packageRoot(), "assets", "skills", VISION_SKILL_NAME);
+  const skillAssetsRoot = path6.join(packageRoot(), "assets", "skills", VISION_SKILL_NAME);
   let web;
   let unregister;
   let started = false;
@@ -1885,7 +2110,7 @@ function startVision(ctx, deps) {
   try {
     const installed = installBundledSkills({
       dshHome: deps.dshHome,
-      assetsRoot: path5.join(packageRoot(), "assets", "skills"),
+      assetsRoot: path6.join(packageRoot(), "assets", "skills"),
       version: packageVersion(),
       log: deps.log
     });
@@ -2046,19 +2271,19 @@ function startVision(ctx, deps) {
 }
 
 // src/xyq/start.ts
-import path9 from "node:path";
+import path10 from "node:path";
 
 // src/xyq/config.ts
-import fs4 from "node:fs";
-import path7 from "node:path";
+import fs5 from "node:fs";
+import path8 from "node:path";
 
 // src/paths.ts
-import path6 from "node:path";
+import path7 from "node:path";
 function resolveDshHome(env = process.env) {
   const explicit = (env.DSH_HOME ?? "").trim();
   if (explicit !== "") return explicit;
   const home = (env.USERPROFILE ?? env.HOME ?? "").trim();
-  return home === "" ? "" : path6.join(home, ".dsh");
+  return home === "" ? "" : path7.join(home, ".dsh");
 }
 
 // src/xyq/config.ts
@@ -2073,7 +2298,7 @@ var DEFAULTS = {
   freedom: "explicit"
 };
 function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)) {
-  return path7.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
+  return path8.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
 }
 function clampInt(value, min, max, fallback) {
   const num = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
@@ -2101,7 +2326,7 @@ function normalizeXyqConfig(raw) {
 }
 function readXyqConfig(file) {
   try {
-    return normalizeXyqConfig(JSON.parse(fs4.readFileSync(file, "utf8")));
+    return normalizeXyqConfig(JSON.parse(fs5.readFileSync(file, "utf8")));
   } catch {
     return { ...DEFAULTS, budget: { ...DEFAULTS.budget } };
   }
@@ -2109,11 +2334,11 @@ function readXyqConfig(file) {
 function writeXyqConfig(file, patch) {
   const next = normalizeXyqConfig({ ...readXyqConfig(file), ...patch });
   try {
-    fs4.mkdirSync(path7.dirname(file), { recursive: true });
+    fs5.mkdirSync(path8.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs4.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
+    fs5.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
 `, "utf8");
-    fs4.renameSync(tmp, file);
+    fs5.renameSync(tmp, file);
   } catch {
   }
   return next;
@@ -2598,14 +2823,14 @@ function xyqFileHandler(deps) {
     const url = new URL(request.url ?? "/", "http://localhost");
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
-    const path10 = await import("node:path");
-    const fs6 = await import("node:fs");
-    const resolved = path10.resolve(target);
-    const root = path10.resolve(deps.outDir);
-    if (!resolved.startsWith(root + path10.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
+    const path11 = await import("node:path");
+    const fs7 = await import("node:fs");
+    const resolved = path11.resolve(target);
+    const root = path11.resolve(deps.outDir);
+    if (!resolved.startsWith(root + path11.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
-      const data = fs6.readFileSync(resolved);
-      const ext = path10.extname(resolved).toLowerCase();
+      const data = fs7.readFileSync(resolved);
+      const ext = path11.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
       if (request.method === "HEAD") response.end();
@@ -2737,9 +2962,9 @@ function xyqTools(service) {
 
 // src/xyq/cli.ts
 import { spawn as spawn2 } from "node:child_process";
-import fs5 from "node:fs";
+import fs6 from "node:fs";
 import os2 from "node:os";
-import path8 from "node:path";
+import path9 from "node:path";
 function platformDir() {
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   if (process.platform === "win32") return `win32-${arch}`;
@@ -2750,14 +2975,14 @@ function binaryName() {
   return process.platform === "win32" ? "pippit-tool-cli.exe" : "pippit-tool-cli";
 }
 function cachedCliCandidates(home = os2.homedir()) {
-  const base = path8.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
+  const base = path9.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
   return [
-    path8.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
-    path8.join(base, "node_modules", ".bin", binaryName())
+    path9.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
+    path9.join(base, "node_modules", ".bin", binaryName())
   ];
 }
 function ensureCliScript(home = os2.homedir()) {
-  return path8.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
+  return path9.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
 }
 var defaultCliRunner = (args, options) => new Promise((resolve) => {
   const child = spawn2(cliPathForRun(args), args.slice(1), {
@@ -2800,7 +3025,7 @@ function cliPathForRun(args) {
 async function installCli(run, options = {}) {
   const home = options.home ?? os2.homedir();
   const script = ensureCliScript(home);
-  if (!fs5.existsSync(script)) return void 0;
+  if (!fs6.existsSync(script)) return void 0;
   const result = await run([process.execPath, script], { env: {}, timeoutMs: options.timeoutMs ?? 3e5 });
   const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -2815,11 +3040,11 @@ async function installCli(run, options = {}) {
 async function resolveCliPath(run, options = {}) {
   const home = options.home ?? os2.homedir();
   for (const candidate of cachedCliCandidates(home)) {
-    if (fs5.existsSync(candidate)) return candidate;
+    if (fs6.existsSync(candidate)) return candidate;
   }
   const installed = await installCli(run, { home });
-  if (installed !== void 0 && fs5.existsSync(installed)) {
-    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path8.basename(installed) });
+  if (installed !== void 0 && fs6.existsSync(installed)) {
+    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path9.basename(installed) });
     return installed;
   }
   return void 0;
@@ -2851,7 +3076,7 @@ function startXyq(ctx, deps) {
   let unregister;
   let started = false;
   let stopped = false;
-  const outDir = path9.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
+  const outDir = path10.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const routeDeps = { service, outDir, log: deps.log };
   const tryStart = () => {
     if (started || stopped) return;
@@ -2867,7 +3092,7 @@ function startXyq(ctx, deps) {
         [XYQ_RESULT_ROUTE, xyqResultHandler(routeDeps)],
         [XYQ_FILE_ROUTE, xyqFileHandler(routeDeps)]
       ];
-      for (const [path10, handler] of registers) disposers.push(web.register({ kind: "exact", path: path10, handler }));
+      for (const [path11, handler] of registers) disposers.push(web.register({ kind: "exact", path: path11, handler }));
       unregister = () => {
         for (const dispose of disposers.splice(0)) dispose();
       };

@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { launchCdpBrowser, type CdpClient, type WebLog } from './driver.js'
 import { askSite, isLoggedIn, isWebSiteId, pollTrue, probeLogin, SITES, type AskResult, type WebSiteId } from './sites.js'
+import { generateImages, imageOutDir, type ImageGenResult } from './image.js'
 import { VisionError } from '../protocols.js'
 
 /** profile 目录：`<dshHome>/storages/dsh-remote-dafeiyu/webvision/<site>`（与 vision.json 同域）。 */
@@ -207,6 +208,57 @@ export async function loginSite(
     await closeSite(site, options.log)
     throw error
   }
+}
+
+/**
+ * 网页版生图：进对话页 → 登录校验 → 切「图像生成」→ 发提示词 → 等图 → 下载。
+ *
+ * 和识图共用同一个浏览器实例与串行队列（同一个页面，不能并发）。
+ */
+export async function generateImageViaWeb(
+  site: WebSiteId,
+  input: { prompt: string; count?: number; timeoutMs?: number; settleMs?: number },
+  options: WebOptions,
+): Promise<ImageGenResult> {
+  const runtime = runtimeOf(site)
+  if (runtime.pending >= MAX_QUEUE) {
+    throw new VisionError(`${SITES[site].label}还在处理上一个请求（网页版一次只能跑一个），等它跑完再试`, 429)
+  }
+  runtime.pending += 1
+  const gap = Math.max(0, (options.minGapMs ?? 5_000) - (Date.now() - runtime.lastUsed))
+  const task = runtime.chain
+    .catch(() => undefined)
+    .then(async () => {
+      if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap))
+      const client = await ensureBrowser(site, options, options.headless !== false)
+      try {
+        await client.goto(SITES[site].loginUrl)
+        const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(SITES[site].editorSelector)})`, 25_000)
+        if (!ready) throw new VisionError(`${SITES[site].label}页面没加载出来（找不到输入框）`, 0)
+        const loggedIn = await isLoggedIn(client, SITES[site])
+        if (!loggedIn) {
+          throw new VisionError(
+            `${SITES[site].label}没有登录：先在设置页「网页版（免 key）」里点「登录 ${SITES[site].label}」登一次`,
+            401,
+          )
+        }
+        return await generateImages(client, SITES[site], imageOutDir(options.dshHome), {
+          prompt: input.prompt,
+          count: input.count,
+          timeoutMs: input.timeoutMs,
+          settleMs: input.settleMs,
+          log: options.log,
+        })
+      } finally {
+        runtime.lastUsed = Date.now()
+        scheduleIdleClose(site, options)
+      }
+    })
+    .finally(() => {
+      runtime.pending = Math.max(0, runtime.pending - 1)
+    })
+  runtime.chain = task.catch(() => undefined)
+  return task as Promise<ImageGenResult>
 }
 
 /** 探登录态（会起无头浏览器，慢；路由层要缓存）。 */

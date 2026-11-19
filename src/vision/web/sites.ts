@@ -47,6 +47,10 @@ export interface WebSiteSpec {
    * cookie 是服务端认的证据，没法提前"没出现"。
    */
   authCookies?: { url: string; names: string[] }
+  /** 生图技能 chip 的文案（有它才支持网页版生图；豆包是「图像生成」）。 */
+  imageSkillChip?: string
+  /** 生成结果图的候选选择器（只取 naturalWidth ≥ 200 的，滤掉头像图标）。 */
+  imageSelectors?: string[]
   /**
    * 可选：进站后先点一次「新对话」。
    *
@@ -79,6 +83,13 @@ export const DOUBAO: WebSiteSpec = {
   loginUrl: 'https://www.doubao.com/chat/',
   editorSelector: '.ProseMirror',
   authCookies: { url: 'https://www.doubao.com', names: ['sessionid', 'sessionid_ss'] },
+  imageSkillChip: '图像生成',
+  imageSelectors: [
+    '[data-testid="receive_message"] img',
+    '.flow-markdown-body img',
+    '[data-testid="image_generated"] img',
+    'img[src*="flow-doubao"]',
+  ],
   loginProbe: `(() => {
     if (document.querySelector('[data-testid="to_login_button"]')) return false;
     if (location.search.includes('from_logout')) return false;
@@ -155,6 +166,7 @@ export function isWebSiteId(value: unknown): value is WebSiteId {
  * DOM 探针有个天然缺陷：页面还没渲染完时"看不到登录按钮"会被当成"已登录"。
  */
 export async function isLoggedIn(client: CdpClient, site: WebSiteSpec): Promise<boolean> {
+  let cookieVerdict: boolean | undefined
   if (site.authCookies) {
     try {
       const result = await client.call<{ cookies?: Array<{ name?: string; value?: string }> }>(
@@ -162,16 +174,31 @@ export async function isLoggedIn(client: CdpClient, site: WebSiteSpec): Promise<
         { urls: [site.authCookies.url] },
         10_000,
       )
-      // 只有真的拿到 cookies 数组才采信；拿不到（老内核 / 桩）就退回 DOM 探针
       if (Array.isArray(result?.cookies)) {
-        return site.authCookies.names.some((name) =>
+        cookieVerdict = site.authCookies.names.some((name) =>
           (result.cookies ?? []).some((cookie) => cookie?.name === name && (cookie?.value ?? '') !== ''),
         )
       }
     } catch {
-      /* 拿不到 cookie 就退回 DOM */
+      /* 拿不到 cookie 就只信 DOM */
     }
   }
+
+  // cookie 没有 ⇒ 一定没登录（没有任何服务端凭据）
+  if (cookieVerdict === false) return false
+
+  /*
+   * cookie 有（或者拿不到）时，**必须再用渲染好的页面确认一次**：
+   * 2026-11-19 实测：cookie 还在磁盘上，但服务端已经把会话作废了——页面顶部是「登录」，
+   * 只看 cookie 会误报"已登录"。反过来，页面刚 open 时按钮还没渲出来，
+   * 只看 DOM 会误报"已登录"。两者一起看才准：cookie 是必要条件，DOM 是确认。
+   */
+  const settled = await pollTrue(client, `!!document.querySelector(${JSON.stringify(site.editorSelector)})`, 8_000)
+  if (!settled) return cookieVerdict === true
+  const first = await client.evaluate<boolean>(site.loginProbe).catch(() => cookieVerdict === true)
+  if (first) return true
+  // 抖一下再看一次（首屏切换/路由跳转时按钮会短暂出现）
+  await wait(1_500)
   return client.evaluate<boolean>(site.loginProbe).catch(() => false)
 }
 

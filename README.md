@@ -396,3 +396,34 @@ cookie: sessionid(len=32, httpOnly) / sessionid_ss / sid_tt …  → 判定：�
 webStatus → {"loggedIn":true}
 识图 → 24.6s，"RED CIRCLE / WORD: BANANA-4271"，会话归到项目「甲鱼乙豆」
 ```
+
+## 九、白嫖豆包生图（0.2.0）
+
+识图之外的第二个网页版能力：**用网页版豆包画图，并把图下载回本地**。
+
+### 9.1 怎么用（agent）
+
+```
+web_image_gen({ prompt: '一只戴红帽的蓝色小鲸鱼，扁平插画风，纯白背景，不要文字', count: 1 })
+→ 1. C:\Users\…\.dsh\storages\dsh-remote-dafeiyu\webvision-images\web-image-1794…-1.png
+```
+
+- 需要**网页版豆包已登录**（比识图更依赖登录）；
+- 单次 20~90 秒，`count` 最多 4；
+- 出的图落在 `<DSH_HOME>/storages/dsh-remote-dafeiyu/webvision-images/`，**不会自动清理**。
+
+### 9.2 实现要点（`src/vision/web/image.ts`）
+
+1. **必须切「图像生成」技能**：默认「对话」模式只会回"我没办法直接生成图片，给你提示词"。
+   宽窗口下输入框下面有 `图像生成` chip；窄窗口下技能**折叠进「技能」菜单**，两条路都试
+   （`switchToImageSkill` 返回 `chip` / `menu` / 空）。
+2. **认出图**：`[data-testid="receive_message"] img` 等候选里取 `naturalWidth ≥ 200` 的（滤头像图标），
+   按 src 去重；**数量稳定 8 秒**不动算生成完（`settleMs` 可调，测试用 30ms）。
+3. **下载**：页面内 `fetch(url, {credentials:'include'})` 拿 `arrayBuffer` → base64 → Node 落盘
+   （带 cookie、绕 CORS；图片是签名 CDN，Node 侧直接 fetch 会 403）。
+4. 提示词要走 `execCommand('insertText')`（同识图）；豆包没有「发送」按钮，用回车。
+
+### 9.3 判据（`tests/vision-image.test.ts`，7 条）
+
+切技能→打字→发送→认出图→下载落盘（字节一致）/ 窄窗口走菜单 / 找不到入口报错 /
+一张没出报错（带页面尾部）/ 出图但下载全失败报错 / 空提示词拒 / 落盘目录固定。

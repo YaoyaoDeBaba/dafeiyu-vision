@@ -102,6 +102,38 @@ export function buildVisionTools(service: VisionService, deps: VisionToolsDeps):
     }),
 
     stringTool({
+      name: 'web_image_gen',
+      description:
+        '用**本机浏览器里已登录的网页版豆包**生成图片（白嫖，不花 API key）：切到「图像生成」→ 发提示词 → 把出的图下载到本地。' +
+        'prompt 是画面描述（中文/英文都行，越具体越好：主体、风格、构图、背景、是否要文字）；' +
+        'count 想要几张（默认 1，上限 4）；返回本地文件绝对路径，用 ![描述](路径) 或 [描述](路径) 展示给用户。' +
+        '单次 20~90 秒；没登录会报「没有登录」，先用 vision_web_status / vision_web_login 处理。' +
+        '注意：这是**生图**，不是识图；要看图请用 recognize_image。',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: '画面描述（主体 + 风格 + 背景，越具体越准）' },
+          count: { type: 'number', description: '想要几张，默认 1，最多 4' },
+        },
+        required: ['prompt'],
+      },
+      timeoutMs: 240_000,
+      async execute(args) {
+        const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
+        if (prompt === '') throw new Error('生图需要提示词（prompt）')
+        const count = typeof args.count === 'number' && Number.isFinite(args.count) ? Math.round(args.count) : 1
+        const result = await service.generateImage(prompt, count)
+        const ignored = ignoredKeys(args, ['prompt', 'count'])
+        const lines = result.files.map((file, index) => `${index + 1}. ${file}`)
+        const body = [
+          `已生成 ${result.files.length} 张（耗时 ${(result.elapsedMs / 1000).toFixed(1)} 秒，入口：${result.via}）：`,
+          ...lines,
+        ].join('\n')
+        return ignored.length === 0 ? body : `${body}\n（忽略未知参数：${ignored.join(', ')}）`
+      },
+    }),
+
+    stringTool({
       name: 'vision_guide',
       description:
         '返回「大肥鱼识图」的完整使用指南（与 skill `dafeiyu-vision` 同一份正文）：什么时候该调 recognize_image、' +
@@ -179,6 +211,7 @@ export function buildVisionTools(service: VisionService, deps: VisionToolsDeps):
 /** 供 start.ts 判断"这个工具是不是我们的"（卸载时按名字注销，如果宿主支持）。 */
 export const VISION_TOOL_NAMES = [
   'recognize_image',
+  'web_image_gen',
   'vision_guide',
   'vision_web_status',
   'vision_web_login',

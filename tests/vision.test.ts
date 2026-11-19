@@ -318,9 +318,9 @@ test('接线：startVision 挂路由；工具常注册（开关只管提示词�
      */
     assert.deepEqual(
       off.tools.map((tool) => tool.name).sort(),
-      ['recognize_image', 'vision_guide', 'vision_web_login', 'vision_web_status'],
+      ['recognize_image', 'vision_guide', 'vision_web_login', 'vision_web_status', 'web_image_gen'],
     )
-    assert.match(disabled.probe.tools ?? '', /registered\(4\)/)
+    assert.match(disabled.probe.tools ?? '', /registered\(5\)/)
     disabled.stop()
 
     const service = createVisionService(home)
