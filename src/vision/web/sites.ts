@@ -140,7 +140,7 @@ export function isWebSiteId(value: unknown): value is WebSiteId {
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** 轮询直到表达式为真；超时返回 false（不抛，调用方决定怎么说）。 */
-async function pollTrue(client: CdpClient, expression: string, timeoutMs: number, stepMs = 300): Promise<boolean> {
+export async function pollTrue(client: CdpClient, expression: string, timeoutMs: number, stepMs = 300): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const ok = await client.evaluate<boolean>(expression).catch(() => false)

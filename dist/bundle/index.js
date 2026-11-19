@@ -1270,11 +1270,10 @@ async function closeAll(log) {
 }
 async function ensureBrowser(site, options, headless) {
   const runtime = runtimeOf(site);
-  if (runtime.client && runtime.headless === headless) {
+  if (runtime.client) {
     runtime.lastUsed = Date.now();
     return runtime.client;
   }
-  if (runtime.client) await closeSite(site, options.log);
   const profileDir = webProfileDir(options.dshHome, site);
   fs2.mkdirSync(profileDir, { recursive: true });
   const client = await launchCdpBrowser({
@@ -1322,11 +1321,21 @@ async function runLoginSession(client, site, options = {}) {
   await client.goto(SITES[site].loginUrl);
   await client.bringToFront();
   options.log?.("\u767B\u5F55\u7A97\u53E3\u5DF2\u5F39\u51FA\u5E76\u7F6E\u9876", { site });
+  const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(SITES[site].editorSelector)})`, 25e3);
   let loggedIn = false;
-  while (Date.now() < deadline) {
-    loggedIn = await client.evaluate(SITES[site].loginProbe).catch(() => false);
-    if (loggedIn) break;
-    await new Promise((resolve) => setTimeout(resolve, 2e3));
+  if (ready) {
+    let streak = 0;
+    while (Date.now() < deadline) {
+      const now = await client.evaluate(SITES[site].loginProbe).catch(() => false);
+      streak = now ? streak + 1 : 0;
+      if (streak >= 2) {
+        loggedIn = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2e3));
+    }
+  } else {
+    options.log?.("\u767B\u5F55\u7A97\u53E3\u91CC\u9875\u9762\u6CA1\u6E32\u67D3\u51FA\u6765\uFF08\u627E\u4E0D\u5230\u8F93\u5165\u6846\uFF09\uFF0C\u7EE7\u7EED\u7B49", { site });
   }
   await client.bringToFront().catch(() => void 0);
   return { loggedIn, waitedMs: Date.now() - startedAt };
@@ -1352,7 +1361,9 @@ async function webStatus(site, options) {
   try {
     const client = await ensureBrowser(site, options, true);
     const probe = await probeLogin(client, SITES[site]);
-    scheduleIdleClose(site, options);
+    const runtime = runtimeOf(site);
+    if (runtime.headless === true) await closeSite(site, options.log);
+    else scheduleIdleClose(site, options);
     return { ...base, loggedIn: probe.loggedIn, url: probe.url };
   } catch (error) {
     return { ...base, loggedIn: false, error: String(error?.message ?? error) };

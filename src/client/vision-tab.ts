@@ -342,22 +342,32 @@ export function buildVisionTab(deps: VisionTabDeps): (() => unknown) | undefined
           const site = String(row.site ?? '')
           const label = String(row.label ?? site)
           const loggedIn = row.loggedIn === true
+          const err = typeof row.error === 'string' && row.error !== '' ? row.error : ''
           return item(h, [
             itemTitle(h, label),
-            itemSub(h, loggedIn ? '已登录，可以直接用来识图' : (typeof row.error === 'string' && row.error !== '' ? `未登录 · ${row.error}` : '未登录：点右边那颗按钮登一次')),
+            itemSub(h, loggedIn
+              ? '已登录，可以直接用来识图'
+              : err !== ''
+                ? `未登录 · ${err}`
+                /* 关键一句：插件用的是**自己的浏览器身份**，用户日常 Edge 里的登录不算（2026-11-19 用户困惑的点） */
+                : '未登录 · 插件用的是独立浏览器身份（跟你日常 Edge 不共享登录）'),
           ], [
             tag(h, loggedIn ? '已登录' : '未登录', loggedIn ? 'ok' : 'warn'),
             button(h, loggedIn ? '重新登录' : `登录 ${label}`, () => void login(site, label), { disabled: busy !== '', kind: loggedIn ? undefined : 'primary' }),
           ])
         })
 
+    const profileDir = sites.map((row) => (typeof row.profileDir === 'string' ? row.profileDir : '')).find((value) => value !== '') ?? ''
+
     return card(h, '网页版（免 key）', [
       h('p', { style: notesStyle, children: '不想配 API key 就用这个：拿本机浏览器里已登录的网页版豆包 / Gemini 识图。登录一次长期有效（cookie 存在本机 profile 里，不会上传）。' }),
+      h('p', { style: hintStyle, children: '⚠️ 插件开的是**它自己的浏览器身份**（独立 profile），你在日常 Edge 里登过不算——必须在这里点「登录」登一次。' }),
       ...rows,
       note === '' ? null : h('p', { style: hintStyle, children: note }),
       h('div', { style: rowStyle, children: [
         button(h, '刷新登录态', () => void load(true), { disabled: busy !== '' }),
       ] }),
+      profileDir === '' ? null : h('p', { style: hintStyle, children: `登录态存在：${profileDir}` }),
       h('p', { style: hintStyle, children: '注意：网页版一次只能跑一张图（8~20 秒），偶发验证码时需要你在弹出的窗口里点一下。' }),
     ])
   }

@@ -9,7 +9,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { launchCdpBrowser, type CdpClient, type WebLog } from './driver.js'
-import { askSite, isWebSiteId, probeLogin, SITES, type AskResult, type WebSiteId } from './sites.js'
+import { askSite, isWebSiteId, pollTrue, probeLogin, SITES, type AskResult, type WebSiteId } from './sites.js'
 import { VisionError } from '../protocols.js'
 
 /** profile 目录：`<dshHome>/storages/dsh-remote-dafeiyu/webvision/<site>`（与 vision.json 同域）。 */
@@ -82,11 +82,15 @@ export async function closeAll(log?: WebLog): Promise<void> {
 
 async function ensureBrowser(site: WebSiteId, options: WebOptions, headless: boolean): Promise<CdpClient> {
   const runtime = runtimeOf(site)
-  if (runtime.client && runtime.headless === headless) {
+  /*
+   * **有实例就复用，绝不因为"无头/有头不一致"重开**（2026-11-19 修的坑）：
+   * 用户在登录窗口里打字时，设置页只要刷新一次登录态，就会把那个窗口关掉重开无头实例——
+   * 表现是"登录窗口自己消失了"。headless 只是启动偏好，不影响能不能用。
+   */
+  if (runtime.client) {
     runtime.lastUsed = Date.now()
     return runtime.client
   }
-  if (runtime.client) await closeSite(site, options.log)
   const profileDir = webProfileDir(options.dshHome, site)
   fs.mkdirSync(profileDir, { recursive: true })
   const client = await launchCdpBrowser({
@@ -154,11 +158,27 @@ export async function runLoginSession(
   await client.goto(SITES[site].loginUrl)
   await client.bringToFront()
   options.log?.('登录窗口已弹出并置顶', { site })
+
+  /*
+   * 必须先等**页面渲染完**再判登录：页面刚打开那一瞬，豆包的「登录」按钮还没渲出来，
+   * "没有登录按钮"就会被误判成"已登录"（2026-11-19 实测：等 0.5 秒就报 loggedIn:true，
+   * 而那条 profile 明明是未登录）。判据还要连续两次为真（约 4 秒），挡掉首屏抖动。
+   */
+  const ready = await pollTrue(client, `!!document.querySelector(${JSON.stringify(SITES[site].editorSelector)})`, 25_000)
   let loggedIn = false
-  while (Date.now() < deadline) {
-    loggedIn = await client.evaluate<boolean>(SITES[site].loginProbe).catch(() => false)
-    if (loggedIn) break
-    await new Promise((resolve) => setTimeout(resolve, 2_000))
+  if (ready) {
+    let streak = 0
+    while (Date.now() < deadline) {
+      const now = await client.evaluate<boolean>(SITES[site].loginProbe).catch(() => false)
+      streak = now ? streak + 1 : 0
+      if (streak >= 2) {
+        loggedIn = true
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+    }
+  } else {
+    options.log?.('登录窗口里页面没渲染出来（找不到输入框），继续等', { site })
   }
   // 登录后可能跳到别的页，再顶一次（用户要接着在新页面里操作）
   await client.bringToFront().catch(() => undefined)
@@ -199,7 +219,14 @@ export async function webStatus(
   try {
     const client = await ensureBrowser(site, options, true)
     const probe = await probeLogin(client, SITES[site])
-    scheduleIdleClose(site, options)
+    /*
+     * 探完就关（2026-11-19 用户实测踩到）：探测用的无头实例会**一直占着 profile**，
+     * 用户紧接着点「登录」时，有头窗口会把请求交给它然后自己退出 —— 表现就是"点了没反应"。
+     * 只有当时开的是无头实例才关；有头登录窗口开着时不能关，那是用户正在用的。
+     */
+    const runtime = runtimeOf(site)
+    if (runtime.headless === true) await closeSite(site, options.log)
+    else scheduleIdleClose(site, options)
     return { ...base, loggedIn: probe.loggedIn, url: probe.url }
   } catch (error) {
     return { ...base, loggedIn: false, error: String((error as Error)?.message ?? error) }
