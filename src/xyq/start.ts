@@ -26,7 +26,7 @@ import {
   type XyqRouteDeps,
 } from './routes.js'
 import { xyqTools } from './tools.js'
-import { defaultCliRunner, resolveCliPath, type CliRunner } from './cli.js'
+import { defaultCliRunner, locateXyqCli, resolveCliPath, type CliRunner } from './cli.js'
 import { createJimengService } from './jimeng/service.js'
 import type { LocateDeps } from './jimeng/cli.js'
 import type { GenerationChannel } from './channel.js'
@@ -95,7 +95,16 @@ export function startXyq(
       outDir: deps.jimengOutDir ?? path.join(deps.dshHome, 'storages', 'dsh-remote-dafeiyu', 'jimeng-output'),
       ...(deps.jimengLocateDeps === undefined ? {} : { locateDeps: deps.jimengLocateDeps }),
     })
-  const service = createXyqService({ configFile, run, resolveCli, log: deps.log, channels: { jimeng: jimengChannel } })
+  // `locateCli` 是**纯定位**（不装）：云雀自愈默认只报错，装不装由调用方的 autoInstall 决定；
+  // `resolveCli` 仍留在 call() 里（真正跑命令时的兜底）。
+  const service = createXyqService({
+    configFile,
+    run,
+    resolveCli,
+    locateCli: () => locateXyqCli(),
+    log: deps.log,
+    channels: { jimeng: jimengChannel },
+  })
 
   const disposers: Array<() => void> = []
   let unregister: (() => void) | undefined

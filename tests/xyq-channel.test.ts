@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createXyqService } from '../src/xyq/service.js'
@@ -426,6 +426,33 @@ test('工具：多余的参数键要显形（ignored），不许静默吞', asyn
     const text = await imageTool.execute({ prompt: '画一只鲸鱼', model: 'm', 风格: '扁平' })
     assert.match(text, /生成完成/)
     assert.match(text, /忽略未知参数：风格/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+// ── 0.4.0 追加判据（review 补）────────────────────────────────────────
+
+test('产品名：manifest 的 description 写「鲸鱼做梦」，包名/工具名/通道 id 一个字不动', async () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as Record<string, unknown>
+  assert.match(String(pkg.description), /鲸鱼做梦/)
+  assert.equal(pkg.name, 'dsh-vision-dafeiyu', '包名不许改')
+  const tools = xyqTools(makeHarness().service).map((tool) => String(tool.name))
+  assert.deepEqual(tools.sort(), ['generate_image', 'generate_video', 'xyq_balance', 'xyq_guide', 'xyq_models'], '工具名不许改')
+})
+
+test('即梦模型解析：信封字段是 data.models（实测形状），不是 items', async () => {
+  const h = makeHarness({
+    installed: true,
+    jimeng: {
+      credit: okEnvelope({ balance: 652 }),
+      model: okEnvelope({ models: [{ key: 'seedream_5.5', name: 'Seedream 5.5' }, { key: 'nova_pro', name: '旗舰生图模型 V2-Pro' }], scenes: ['web_novel_canvas'] }),
+    },
+  })
+  try {
+    const result = await h.service.models('image', 'jimeng')
+    assert.equal(result.ok, true, 'data.models 必须能解析出来（真机就是这个形状）')
+    assert.deepEqual(result.models?.map((m) => m.key), ['seedream_5.5', 'nova_pro'])
   } finally {
     h.cleanup()
   }

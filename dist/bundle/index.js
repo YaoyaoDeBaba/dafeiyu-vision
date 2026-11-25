@@ -2273,17 +2273,564 @@ function startVision(ctx, deps) {
 // src/xyq/start.ts
 import path14 from "node:path";
 
-// src/xyq/config.ts
+// src/xyq/cli.ts
+import { spawn as spawn2 } from "node:child_process";
 import fs5 from "node:fs";
+import os2 from "node:os";
+import path7 from "node:path";
+function platformDir() {
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  if (process.platform === "win32") return `win32-${arch}`;
+  if (process.platform === "darwin") return `darwin-${arch}`;
+  return `linux-${arch}`;
+}
+function binaryNameFor(platform) {
+  return platform === "win32" ? "pippit-tool-cli.exe" : "pippit-tool-cli";
+}
+function binaryName() {
+  return binaryNameFor(process.platform);
+}
+function locateXyqCli(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? os2.homedir();
+  const platform = options.platform ?? process.platform;
+  const exists = options.exists ?? ((file) => {
+    try {
+      return fs5.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+  const candidates = [env.XYQ_CLI_PATH, ...cachedCliCandidates(home)];
+  const name = binaryNameFor(platform);
+  for (const dir of (env.PATH ?? "").split(path7.delimiter)) {
+    if (dir.trim() === "") continue;
+    candidates.push(path7.join(dir, name));
+  }
+  for (const candidate of candidates) {
+    if (candidate !== void 0 && candidate !== "" && exists(candidate)) return candidate;
+  }
+  return void 0;
+}
+function cachedCliCandidates(home = os2.homedir()) {
+  const base = path7.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
+  return [
+    path7.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
+    path7.join(base, "node_modules", ".bin", binaryName())
+  ];
+}
+function ensureCliScript(home = os2.homedir()) {
+  return path7.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
+}
+var defaultCliRunner = (args, options) => new Promise((resolve) => {
+  const child = spawn2(cliPathForRun(args), args.slice(1), {
+    env: { ...process.env, ...options.env },
+    windowsHide: true,
+    // 同 sprite/browser.ts 的理由：**别继承宿主的工作目录**。
+    // 子进程以某个目录为 cwd 时，Windows 不允许把那个目录改名；DSH 自更新恰恰要把
+    // `D:\FeiYu` 改成 `D:\FeiYu.old-*`，一个还活着的子进程就能让安装器连试 10 次
+    // `error 32` 后放弃（2026-11-12 现场就是这样）。CLI 跑完就退，但别赌它来得及。
+    cwd: os2.tmpdir()
+  });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      child.kill();
+    } catch {
+    }
+  }, options.timeoutMs);
+  child.stdout?.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+  child.on("error", (error) => {
+    clearTimeout(timer);
+    resolve({ code: -1, stdout, stderr: `${stderr}${String(error?.message ?? error)}`, timedOut });
+  });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    resolve({ code: code ?? -1, stdout, stderr, timedOut });
+  });
+});
+function cliPathForRun(args) {
+  return args[0] ?? "";
+}
+var XYQ_INSTALL_TIMEOUT_MS = 18e4;
+function truncateTail(text, limit = 64 * 1024) {
+  return text.length <= limit ? text : text.slice(text.length - limit);
+}
+async function installCli(run, options = {}) {
+  const home = options.home ?? os2.homedir();
+  const script = ensureCliScript(home);
+  if (!fs5.existsSync(script)) return void 0;
+  const result = await run([process.execPath, script], { env: {}, timeoutMs: options.timeoutMs ?? XYQ_INSTALL_TIMEOUT_MS });
+  if (result.timedOut) return void 0;
+  const lines = truncateTail(result.stdout).split(/\r?\n/).filter((line) => line.trim() !== "");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      if (typeof parsed.cli_path === "string" && parsed.cli_path !== "") return parsed.cli_path;
+    } catch {
+    }
+  }
+  return void 0;
+}
+async function resolveCliPath(run, options = {}) {
+  const home = options.home ?? os2.homedir();
+  for (const candidate of cachedCliCandidates(home)) {
+    if (fs5.existsSync(candidate)) return candidate;
+  }
+  const installed = await installCli(run, { home });
+  if (installed !== void 0 && fs5.existsSync(installed)) {
+    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path7.basename(installed) });
+    return installed;
+  }
+  return void 0;
+}
+
+// src/xyq/selfheal.ts
+import fs7 from "node:fs";
+import os4 from "node:os";
+import path9 from "node:path";
+
+// src/xyq/jimeng/cli.ts
+import fs6 from "node:fs";
+import os3 from "node:os";
 import path8 from "node:path";
+function exeName(base, platform) {
+  return platform === "win32" ? `${base}.exe` : base;
+}
+function releaseVersion(dirName) {
+  const match = dirName.match(/jimeng-novel-(\d+\.\d+\.\d+)/);
+  if (!match || match[1] === void 0) return [0, 0, 0];
+  return match[1].split(".").map((part) => Number.parseInt(part, 10) || 0);
+}
+function compareVersion(a, b) {
+  const left = releaseVersion(a);
+  const right = releaseVersion(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+function fromPath(pathValue, fileName, platform, exists) {
+  if (pathValue === void 0 || pathValue === "") return [];
+  const found = [];
+  for (const dir of pathValue.split(path8.delimiter)) {
+    if (dir.trim() === "") continue;
+    const candidate = path8.join(dir, fileName);
+    if (exists(candidate)) found.push(candidate);
+    if (platform === "win32" && !fileName.toLowerCase().endsWith(".exe") && exists(`${candidate}.exe`)) found.push(`${candidate}.exe`);
+  }
+  return found;
+}
+function firstExisting(candidates, exists) {
+  for (const candidate of candidates) {
+    if (candidate !== void 0 && candidate !== "" && exists(candidate)) return candidate;
+  }
+  return void 0;
+}
+function locateJimengCli(deps = {}) {
+  const env = deps.env ?? process.env;
+  const home = deps.home ?? os3.homedir();
+  const platform = deps.platform ?? process.platform;
+  const exists = deps.exists ?? ((file) => {
+    try {
+      return fs6.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+  const listDir = deps.listDir ?? ((dir) => {
+    try {
+      return fs6.readdirSync(dir);
+    } catch {
+      return [];
+    }
+  });
+  const novelName = exeName("jimeng-novel", platform);
+  const releasesRoot = path8.join(home, ".local", "share", "jimeng-novel", "releases");
+  const releases = listDir(releasesRoot).filter((name) => name.startsWith("jimeng-novel-")).sort(compareVersion).reverse();
+  const novelCandidates = [
+    env.JIMENG_NOVEL_CLI,
+    ...releases.map((name) => path8.join(releasesRoot, name, novelName)),
+    path8.join(home, ".local", "bin", novelName),
+    ...fromPath(env.PATH, novelName, platform, exists)
+  ];
+  const canvasName = exeName("dreamina-canvas", platform);
+  const canvasCandidates = [
+    env.DREAMINA_CANVAS_CLI,
+    path8.join(home, "bin", canvasName),
+    path8.join(home, ".local", "bin", canvasName),
+    ...fromPath(env.PATH, canvasName, platform, exists)
+  ];
+  const novel = firstExisting(novelCandidates, exists);
+  const canvas = firstExisting(canvasCandidates, exists);
+  return {
+    ...novel === void 0 ? {} : { novel },
+    ...canvas === void 0 ? {} : { canvas }
+  };
+}
+var JIMENG_INSTALL_HINT = "curl.exe -s https://jimeng.jianying.com/novel-cli | bash\uFF08Windows \u4E0A\u6CA1\u6709 bash\uFF1A\u5B98\u65B9\u811A\u672C\u5185\u5D4C\u4E86 PowerShell \u5B89\u88C5\u5668\uFF0C\u89C1 SKILL \u7684\u5B89\u88C5\u6BB5\uFF09";
+
+// src/xyq/selfheal.ts
+var CANVAS_INSTALL_URL = "https://jimeng.jianying.com/canvas-cli/install.ps1";
+var NOVEL_CLI_URL = "https://jimeng.jianying.com/novel-cli";
+var MANUAL_INSTALL_CANVAS = "\u5728 PowerShell \u91CC\u8DD1\uFF1Airm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex";
+var MANUAL_INSTALL_NOVEL = `\u77ED\u5267 CLI\uFF08Windows / PowerShell\uFF0C\u628A\u4E0B\u9762\u6574\u6BB5\u7C98\u8FDB PowerShell \u8DD1\uFF09\uFF1A$s=(irm 'https://jimeng.jianying.com/novel-cli'); $b=[regex]::Match($s,"DEFAULT_WINDOWS_INSTALLER_BASE64='([^']+)'").Groups[1].Value; $p=Join-Path $env:TEMP 'jimeng-novel-install.ps1'; [IO.File]::WriteAllText($p,[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b))); & $p`;
+function truncate(text, limit = 400) {
+  const trimmed = text.trim();
+  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit)}\u2026`;
+}
+function defaultWriteTempScript(name, content) {
+  const dir = fs7.mkdtempSync(path9.join(os4.tmpdir(), "jimeng-install-"));
+  const file = path9.join(dir, name);
+  fs7.writeFileSync(file, content, "utf8");
+  return {
+    file,
+    cleanup: () => {
+      try {
+        fs7.rmSync(dir, { recursive: true, force: true });
+      } catch {
+      }
+    }
+  };
+}
+function extractWindowsInstaller(script) {
+  const match = script.match(/DEFAULT_WINDOWS_INSTALLER_BASE64='([A-Za-z0-9+/=]+)'/);
+  if (!match || match[1] === void 0) return void 0;
+  try {
+    return Buffer.from(match[1], "base64").toString("utf8");
+  } catch {
+    return void 0;
+  }
+}
+function createJimengSelfHealer(deps) {
+  const platform = deps.platform ?? process.platform;
+  const now = deps.now ?? Date.now;
+  const installTimeout = deps.installTimeoutMs ?? 12e4;
+  const statusTimeout = deps.statusTimeoutMs ?? 2e4;
+  const loginTimeout = deps.loginTimeoutMs ?? 6e4;
+  const installBackoff = deps.installBackoffMs ?? 10 * 6e4;
+  const loginBackoff = deps.loginBackoffMs ?? 5 * 6e4;
+  const powershell = deps.powershell ?? deps.env?.JIMENG_POWERSHELL ?? (platform === "win32" ? "powershell.exe" : "powershell");
+  const fetchText = deps.fetchText ?? (async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`\u4E0B\u8F7D\u5931\u8D25 HTTP ${response.status}`);
+    return await response.text();
+  });
+  const writeTemp = deps.writeTempScript ?? defaultWriteTempScript;
+  const locate = () => (deps.locate ?? (() => locateJimengCli(deps.locateDeps)))();
+  let installInFlight;
+  let lastInstall;
+  let loginInFlight;
+  let lastLogin;
+  async function runQuiet(args, timeoutMs) {
+    const result = await deps.run(args, { env: {}, timeoutMs });
+    const detail = truncate(`${result.stdout}
+${result.stderr}`);
+    if (result.timedOut) return { ok: false, detail: `\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\uFF09${detail === "" ? "" : `\uFF1A${detail}`}` };
+    if (result.code !== 0) return { ok: false, detail: detail === "" ? `\u9000\u51FA\u7801 ${result.code}` : detail };
+    return { ok: true, detail };
+  }
+  async function installCanvas() {
+    const command = `irm '${CANVAS_INSTALL_URL}' | iex`;
+    return runQuiet([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-Command", command], installTimeout);
+  }
+  async function installNovel() {
+    let script;
+    try {
+      script = await fetchText(NOVEL_CLI_URL);
+    } catch (error) {
+      return { ok: false, detail: `\u4E0B\u8F7D ${NOVEL_CLI_URL} \u5931\u8D25\uFF1A${String(error?.message ?? error)}` };
+    }
+    const installer = extractWindowsInstaller(script);
+    if (installer === void 0) return { ok: false, detail: "novel-cli \u811A\u672C\u91CC\u6CA1\u627E\u5230\u5185\u5D4C\u7684 Windows \u5B89\u88C5\u5668" };
+    const temp = writeTemp("jimeng-novel-install.ps1", installer);
+    try {
+      return await runQuiet([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", temp.file], installTimeout);
+    } finally {
+      temp.cleanup();
+    }
+  }
+  async function doInstall() {
+    const current = locate();
+    if (current.novel !== void 0) return { ok: true, cliPath: current.novel };
+    if (platform !== "win32") {
+      const message2 = `\u8FD9\u53F0\u673A\u5668\u4E0D\u662F Windows\uFF0C\u63D2\u4EF6\u4E0D\u81EA\u52A8\u8DD1\u5B89\u88C5\u811A\u672C\u3002\u8BF7\u624B\u5DE5\u5B89\u88C5\u5373\u68A6 CLI \u540E\u91CD\u8BD5\u3002${MANUAL_INSTALL_NOVEL}`;
+      lastInstall = { at: now(), ok: false, message: message2 };
+      return { ok: false, message: message2 };
+    }
+    deps.log("\u5373\u68A6 CLI \u6CA1\u88C5\uFF0C\u5F00\u59CB\u81EA\u52A8\u5B89\u88C5\uFF08\u753B\u5E03 + \u77ED\u5267\uFF09", { platform });
+    const canvas = await installCanvas();
+    const novel = await installNovel();
+    const after = locate();
+    if (after.novel !== void 0) {
+      deps.log("\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5B8C\u6210", { path: path9.basename(after.novel) });
+      lastInstall = { at: now(), ok: true, message: "" };
+      return { ok: true, cliPath: after.novel };
+    }
+    const reasons = [];
+    if (!canvas.ok) reasons.push(`\u753B\u5E03\uFF1A${canvas.detail}`);
+    if (!novel.ok) reasons.push(`\u77ED\u5267\uFF1A${novel.detail}`);
+    if (reasons.length === 0) {
+      reasons.push("\u5B89\u88C5\u811A\u672C\u8DD1\u5B8C\u4E86\uFF0C\u4F46\u6CA1\u5728 ~/.local/share/jimeng-novel/releases \u4E0B\u627E\u5230 jimeng-novel.exe");
+      reasons.push("\u82E5\u63D0\u793A\u6587\u4EF6\u88AB\u5360\u7528\uFF0C\u628A %USERPROFILE%\\bin\\.dreamina-canvas.install.* \u91CC\u7684 dreamina-canvas_windows_amd64.exe \u624B\u52A8\u6539\u540D\u4E3A dreamina-canvas.exe");
+    }
+    const message = `\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF1A${reasons.join("\uFF1B")}\u3002${MANUAL_INSTALL_CANVAS}`;
+    deps.log("\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF08\u4E91\u96C0/\u5176\u5B83\u529F\u80FD\u4E0D\u53D7\u5F71\u54CD\uFF09", { reason: truncate(reasons.join("\uFF1B"), 200) });
+    lastInstall = { at: now(), ok: false, message };
+    return { ok: false, message };
+  }
+  async function ensureCli(autoInstall) {
+    const current = locate();
+    if (current.novel !== void 0) return { ok: true, cliPath: current.novel };
+    if (!autoInstall) {
+      return {
+        ok: false,
+        message: `\u6CA1\u627E\u5230\u5373\u68A6 CLI\uFF08jimeng-novel\uFF09\u3002\u672C\u6B21\u8C03\u7528\u6CA1\u5F00\u81EA\u52A8\u5B89\u88C5\uFF08autoInstall:false\uFF09\uFF1A\u9700\u8981\u81EA\u52A8\u88C5\u5C31\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 autoInstall:true\uFF1B\u624B\u5DE5\u5B89\u88C5\uFF1A${MANUAL_INSTALL_CANVAS}\uFF1B${MANUAL_INSTALL_NOVEL}`
+      };
+    }
+    if (lastInstall !== void 0 && !lastInstall.ok && now() - lastInstall.at < installBackoff) {
+      return { ok: false, message: `${lastInstall.message}\uFF08${Math.ceil((installBackoff - (now() - lastInstall.at)) / 6e4)} \u5206\u949F\u5185\u4E0D\u518D\u91CD\u8BD5\uFF0C\u907F\u514D\u53CD\u590D\u4E0B\u8F7D\uFF09` };
+    }
+    if (installInFlight !== void 0) return installInFlight;
+    installInFlight = doInstall().finally(() => {
+      installInFlight = void 0;
+    });
+    return installInFlight;
+  }
+  async function readLogin(cliPath) {
+    const result = await deps.run([cliPath, "credit", "get", "-j"], { env: {}, timeoutMs: statusTimeout });
+    const raw = result.stdout.trim();
+    if (raw === "") return void 0;
+    try {
+      const parsed = JSON.parse(raw);
+      const error = parsed.error !== null && typeof parsed.error === "object" ? parsed.error : void 0;
+      const details = error?.details !== null && typeof error?.details === "object" ? error.details : void 0;
+      const auth = details?.auth !== null && typeof details?.auth === "object" ? details.auth : void 0;
+      if (error?.code === "AUTH_FAILED" || auth?.nextAction === "login") return false;
+      if (parsed.status === "ok" || parsed.status === "success") return true;
+      if (error === void 0 && parsed.data !== void 0 && parsed.data !== null) return true;
+      return void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function isExpiredAuth(text) {
+    const raw = text.trim();
+    if (raw === "") return false;
+    try {
+      const parsed = JSON.parse(raw);
+      const error = parsed.error !== null && typeof parsed.error === "object" ? parsed.error : void 0;
+      const details = error?.details !== null && typeof error?.details === "object" ? error.details : void 0;
+      const auth = details?.auth !== null && typeof details?.auth === "object" ? details.auth : void 0;
+      if (auth?.nextAction === "restart") return true;
+      if (auth?.reason === "authorization_expired") return true;
+      if (auth?.code === 40014 || auth?.code === "40014") return true;
+      if (error?.code === "AUTH_FAILED" && /过期|expired/i.test(String(error.message ?? ""))) return true;
+      return false;
+    } catch {
+      return /authorization_expired|40014|nextAction\\?":\\?"restart/.test(raw);
+    }
+  }
+  async function probePending(cliPath, deviceCode) {
+    const result = await deps.run(
+      [cliPath, "login", "--wait", "--device-code", deviceCode, "--timeout", "1s", "-j"],
+      { env: {}, timeoutMs: 2e4 }
+    );
+    const raw = result.stdout.trim();
+    if (raw === "") return "unknown";
+    if (isExpiredAuth(raw)) return "expired";
+    try {
+      const parsed = JSON.parse(raw);
+      const data = parsed.data !== null && typeof parsed.data === "object" ? parsed.data : void 0;
+      if (data?.status === "logged_in" || parsed.status === "logged_in" || data?.loggedIn === true) return "logged_in";
+      return "pending";
+    } catch {
+      return "unknown";
+    }
+  }
+  async function startLogin(cliPath) {
+    if (loginInFlight !== void 0) return loginInFlight;
+    loginInFlight = runLogin(cliPath).finally(() => {
+      loginInFlight = void 0;
+    });
+    return loginInFlight;
+  }
+  async function runLogin(cliPath) {
+    if (lastLogin !== void 0 && now() - lastLogin.at < loginBackoff) {
+      if (lastLogin.deviceCode !== void 0) {
+        const state = await probePending(cliPath, lastLogin.deviceCode);
+        if (state === "logged_in") return { ok: true };
+        if (state === "expired") {
+          deps.log("\u5373\u68A6\u6388\u6743\u5DF2\u8FC7\u671F\uFF0C\u6539\u7528 --restart \u91CD\u65B0\u53D1\u8D77\uFF08\u4E0D\u590D\u7528\u6B7B\u94FE\u63A5\uFF09", { reason: "authorization_expired" });
+          lastLogin = void 0;
+          return doLogin(cliPath, true);
+        }
+      }
+      return { ok: false, message: lastLogin.message };
+    }
+    return doLogin(cliPath, false);
+  }
+  async function doLogin(cliPath, restart) {
+    deps.log(
+      restart ? "\u5373\u68A6\u6388\u6743\u8FC7\u671F\uFF0C\u91CD\u65B0\u53D1\u8D77\u6D4F\u89C8\u5668\u6388\u6743\uFF08--restart\uFF09" : "\u5373\u68A6\u6CA1\u767B\u5F55\uFF0C\u81EA\u52A8\u53D1\u8D77\u6D4F\u89C8\u5668\u6388\u6743\uFF08\u9700\u8981\u7528\u6237\u70B9\u94FE\u63A5\uFF09",
+      { path: path9.basename(cliPath) }
+    );
+    const args = [cliPath, "login", "--non-interactive", ...restart ? ["--restart"] : [], "-j"];
+    const result = await deps.run(args, { env: {}, timeoutMs: loginTimeout });
+    if (!restart && isExpiredAuth(result.stdout)) {
+      deps.log("\u5373\u68A6\u6388\u6743\u88AB\u5224\u8FC7\u671F\uFF0C\u81EA\u52A8\u6539\u7528 --restart \u91CD\u65B0\u53D1\u8D77", { reason: "authorization_expired" });
+      return doLogin(cliPath, true);
+    }
+    if (result.timedOut) {
+      const message2 = `\u5373\u68A6\u6388\u6743\u53D1\u8D77\u8D85\u65F6\uFF08${Math.round(loginTimeout / 1e3)} \u79D2\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D`;
+      lastLogin = { at: now(), message: message2 };
+      return { ok: false, message: message2 };
+    }
+    let link = "";
+    let nextCommand = "";
+    let deviceCode = "";
+    try {
+      const parsed = JSON.parse(result.stdout.trim());
+      const data = parsed.data !== null && typeof parsed.data === "object" ? parsed.data : void 0;
+      const challenge = data?.challenge !== null && typeof data?.challenge === "object" ? data.challenge : void 0;
+      if (typeof challenge?.verificationUriComplete === "string" && challenge.verificationUriComplete !== "") link = challenge.verificationUriComplete;
+      else if (typeof challenge?.verificationUri === "string" && challenge.verificationUri !== "") link = challenge.verificationUri;
+      if (typeof data?.nextCommand === "string" && data.nextCommand !== "") nextCommand = data.nextCommand;
+      if (typeof challenge?.deviceCode === "string" && challenge.deviceCode !== "") deviceCode = challenge.deviceCode;
+      if (link === "" && data?.status === "logged_in") return { ok: true };
+    } catch {
+    }
+    if (link === "") {
+      const detail = truncate(`${result.stdout}
+${result.stderr}`);
+      const message2 = `\u5373\u68A6\u6388\u6743\u6CA1\u62FF\u5230\u94FE\u63A5\uFF08${detail === "" ? "CLI \u6CA1\u6709\u8F93\u51FA" : detail}\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D`;
+      lastLogin = { at: now(), message: message2 };
+      return { ok: false, message: message2 };
+    }
+    const lines = [`\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\u3002**\u70B9\u8FD9\u4E2A\u94FE\u63A5\u6388\u6743**\uFF1A${link}`, "\u6388\u6743\u5B8C\u544A\u8BC9\u6211\uFF0C\u6211\u63A5\u7740\u5F80\u4E0B\u8D70\uFF08\u4E0D\u7528\u518D\u95EE\u6211\u522B\u7684\uFF09\u3002"];
+    if (nextCommand !== "") lines.push(`\u6388\u6743\u540E\u9700\u8981\u7EED\u7B49\u7684\u547D\u4EE4\uFF1A${nextCommand}`);
+    const message = lines.join("\n");
+    lastLogin = { at: now(), message, ...deviceCode === "" ? {} : { deviceCode } };
+    return { ok: false, message };
+  }
+  return {
+    ensureCli,
+    readLogin,
+    /** 第二步：授权在不在（只在确认「未登录」时发一次授权）。 */
+    async ensureLogin(cliPath, autoLogin) {
+      const loggedIn = await readLogin(cliPath);
+      if (loggedIn === true) return { ok: true };
+      if (loggedIn === void 0) return { ok: true };
+      if (!autoLogin) {
+        return {
+          ok: false,
+          message: `\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\uFF0C\u672C\u6B21\u8C03\u7528\u5173\u6389\u4E86\u81EA\u52A8\u6388\u6743\uFF08autoLogin:false\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D\uFF0C\u518D\u628A\u8FD4\u56DE\u7684\u94FE\u63A5\u7ED9\u7528\u6237\u70B9\u3002`
+        };
+      }
+      return startLogin(cliPath);
+    },
+    /** 测试/排障用：清掉进程内的退避与单飞状态。 */
+    reset() {
+      installInFlight = void 0;
+      lastInstall = void 0;
+      loginInFlight = void 0;
+      lastLogin = void 0;
+    }
+  };
+}
+var XYQ_MANUAL_INSTALL = "\u5728\u7EC8\u7AEF\u8DD1\uFF1Anpx @pippit-dev/cli@latest install";
+var XYQ_INSTALL_PACKAGE = "@pippit-dev/cli@latest";
+var XYQ_INSTALL_SUBCOMMAND = "install";
+function createXyqSelfHealer(deps) {
+  const platform = deps.platform ?? process.platform;
+  const now = deps.now ?? Date.now;
+  const installTimeout = deps.installTimeoutMs ?? 18e4;
+  const installBackoff = deps.installBackoffMs ?? 10 * 6e4;
+  const locate = deps.locate ?? (() => locateXyqCli({ env: deps.env, platform }));
+  const npxCommand = deps.env?.XYQ_NPX ?? (platform === "win32" ? "npx.cmd" : "npx");
+  let inFlight;
+  let lastInstall;
+  async function doInstall() {
+    const found = locate();
+    if (found !== void 0) return { ok: true, cliPath: found };
+    deps.log("\u5C0F\u4E91\u96C0 CLI \u6CA1\u88C5\uFF0C\u5F00\u59CB\u81EA\u52A8\u5B89\u88C5\uFF08npx @pippit-dev/cli@latest install\uFF09", { platform });
+    const result = await deps.run([npxCommand, XYQ_INSTALL_PACKAGE, XYQ_INSTALL_SUBCOMMAND], {
+      env: {},
+      timeoutMs: installTimeout
+    });
+    const detail = truncate(`${result.stdout}
+${result.stderr}`);
+    if (result.timedOut) {
+      const message2 = `\u5C0F\u4E91\u96C0 CLI \u81EA\u52A8\u5B89\u88C5\u8D85\u65F6\uFF08${Math.round(installTimeout / 1e3)} \u79D2\uFF09\u3002\u624B\u5DE5\u5B89\u88C5\uFF1A${XYQ_MANUAL_INSTALL}`;
+      deps.log("\u5C0F\u4E91\u96C0 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF1A\u8D85\u65F6", { reason: "timeout" });
+      lastInstall = { at: now(), ok: false, message: message2 };
+      return { ok: false, message: message2 };
+    }
+    const after = locate();
+    if (after !== void 0) {
+      deps.log("\u5C0F\u4E91\u96C0 CLI \u81EA\u52A8\u5B89\u88C5\u5B8C\u6210", { path: path9.basename(after) });
+      lastInstall = { at: now(), ok: true, message: "" };
+      return { ok: true, cliPath: after };
+    }
+    const reason = result.code === 0 ? "\u5B89\u88C5\u547D\u4EE4\u8DD1\u5B8C\u4E86\uFF0C\u4F46\u6CA1\u627E\u5230 pippit-tool-cli\uFF08\u53EF\u80FD\u5728\u522B\u7684\u76EE\u5F55\uFF09" : detail === "" ? `\u9000\u51FA\u7801 ${result.code}` : detail;
+    const message = `\u5C0F\u4E91\u96C0 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF1A${reason}\u3002\u624B\u5DE5\u5B89\u88C5\uFF1A${XYQ_MANUAL_INSTALL}`;
+    deps.log("\u5C0F\u4E91\u96C0 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF08\u4E91\u96C0\u5DE5\u5177\u4ECD\u53EF\u7528\u4F46\u4F1A\u62A5\u9519\uFF09", { reason: truncate(reason, 200) });
+    lastInstall = { at: now(), ok: false, message };
+    return { ok: false, message };
+  }
+  return {
+    /**
+     * 第一步：CLI 在不在。**默认（autoInstall 不为 true）只报错**，不动手。
+     * 失败退避 10 分钟，避免一次会话里反复跑 npx。
+     */
+    async ensureCli(autoInstall) {
+      const found = locate();
+      if (found !== void 0) return { ok: true, cliPath: found };
+      if (autoInstall !== true) {
+        return {
+          ok: false,
+          message: `\u6CA1\u627E\u5230 pippit-tool-cli\uFF08\u5C0F\u4E91\u96C0 CLI\uFF09\u3002\u9ED8\u8BA4\u4E0D\u4F1A\u81EA\u52A8\u5B89\u88C5\uFF1A\u672C\u6B21\u8C03\u7528\u6CA1\u6709\u4F20 autoInstall:true\u3002\u624B\u5DE5\u5B89\u88C5\uFF1A${XYQ_MANUAL_INSTALL}`
+        };
+      }
+      if (lastInstall !== void 0 && !lastInstall.ok && now() - lastInstall.at < installBackoff) {
+        return {
+          ok: false,
+          message: `${lastInstall.message}\uFF08${Math.ceil((installBackoff - (now() - lastInstall.at)) / 6e4)} \u5206\u949F\u5185\u4E0D\u518D\u91CD\u8BD5\uFF0C\u907F\u514D\u53CD\u590D\u4E0B\u8F7D\uFF09`
+        };
+      }
+      if (inFlight !== void 0) return inFlight;
+      inFlight = doInstall().finally(() => {
+        inFlight = void 0;
+      });
+      return inFlight;
+    },
+    reset() {
+      inFlight = void 0;
+      lastInstall = void 0;
+    }
+  };
+}
+
+// src/xyq/config.ts
+import fs8 from "node:fs";
+import path11 from "node:path";
 
 // src/paths.ts
-import path7 from "node:path";
+import path10 from "node:path";
 function resolveDshHome(env = process.env) {
   const explicit = (env.DSH_HOME ?? "").trim();
   if (explicit !== "") return explicit;
   const home = (env.USERPROFILE ?? env.HOME ?? "").trim();
-  return home === "" ? "" : path7.join(home, ".dsh");
+  return home === "" ? "" : path10.join(home, ".dsh");
 }
 
 // src/xyq/config.ts
@@ -2298,7 +2845,7 @@ var DEFAULTS = {
   freedom: "explicit"
 };
 function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)) {
-  return path8.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
+  return path11.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
 }
 function clampInt(value, min, max, fallback) {
   const num = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
@@ -2326,7 +2873,7 @@ function normalizeXyqConfig(raw) {
 }
 function readXyqConfig(file) {
   try {
-    return normalizeXyqConfig(JSON.parse(fs5.readFileSync(file, "utf8")));
+    return normalizeXyqConfig(JSON.parse(fs8.readFileSync(file, "utf8")));
   } catch {
     return { ...DEFAULTS, budget: { ...DEFAULTS.budget } };
   }
@@ -2334,11 +2881,11 @@ function readXyqConfig(file) {
 function writeXyqConfig(file, patch) {
   const next = normalizeXyqConfig({ ...readXyqConfig(file), ...patch });
   try {
-    fs5.mkdirSync(path8.dirname(file), { recursive: true });
+    fs8.mkdirSync(path11.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs5.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
+    fs8.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}
 `, "utf8");
-    fs5.renameSync(tmp, file);
+    fs8.renameSync(tmp, file);
   } catch {
   }
   return next;
@@ -2401,7 +2948,7 @@ function parseJson(text) {
 }
 function authMessage(text) {
   if (/登录凭证|XYQ_ACCESS_KEY|未授权|unauthorized|401|403/i.test(text)) {
-    return "\u5C0F\u4E91\u96C0 Access Key \u5DF2\u8FC7\u671F\u6216\u65E0\u6548\u3002\u8BF7\u5230\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u66F4\u65B0\u540E\uFF0C\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u91CD\u65B0\u586B\u5199\u3002";
+    return "\u5C0F\u4E91\u96C0 Access Key \u5DF2\u8FC7\u671F\u6216\u65E0\u6548\u3002\u8BF7\u5230\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u66F4\u65B0\u540E\uFF0C\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u91CC\u91CD\u65B0\u586B\u5199\u3002";
   }
   return void 0;
 }
@@ -2421,11 +2968,11 @@ function createXyqService(deps) {
   }
   async function call(args, timeoutMs) {
     const config = readConfig();
-    if (!config.enabled) return { result: { code: -1, stdout: "", stderr: "", timedOut: false }, message: "\u5C0F\u4E91\u96C0\u80FD\u529B\u5DF2\u5173\u95ED\uFF08\u8BBE\u7F6E\u9875 \u2192 \u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\uFF09" };
+    if (!config.enabled) return { result: { code: -1, stdout: "", stderr: "", timedOut: false }, message: "\u5C0F\u4E91\u96C0\u80FD\u529B\u5DF2\u5173\u95ED\uFF08\u8BBE\u7F6E\u9875 \u2192 \u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\uFF09" };
     if (config.accessKey === "") {
       return {
         result: { code: -1, stdout: "", stderr: "", timedOut: false },
-        message: "\u8FD8\u6CA1\u586B\u5C0F\u4E91\u96C0 Access Key\u3002\u8BF7\u5230\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u65B0\u5EFA\uFF0C\u7136\u540E\u586B\u5230\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u3002"
+        message: "\u8FD8\u6CA1\u586B\u5C0F\u4E91\u96C0 Access Key\u3002\u8BF7\u5230\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u65B0\u5EFA\uFF0C\u7136\u540E\u586B\u5230\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u91CC\u3002"
       };
     }
     const cli = await deps.resolveCli();
@@ -2498,25 +3045,28 @@ ${result.stderr}`;
     if (!status.available) return { message: unavailableMessage(status) };
     return { channel };
   }
+  const healer = deps.xyqHealer ?? createXyqSelfHealer({
+    run: deps.run,
+    log: deps.log,
+    locate: deps.locateCli ?? (() => locateXyqCli())
+  });
   async function preflightXyq(options) {
     const config = readConfig();
     if (!config.enabled) {
-      return { ok: false, message: "\u5C0F\u4E91\u96C0\u80FD\u529B\u5DF2\u5173\u95ED\uFF08\u8BBE\u7F6E\u9875 \u2192 \u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\uFF09\u3002\u8981\u7528\u5C31\u5148\u628A\u5F00\u5173\u6253\u5F00\u3002" };
+      return { ok: false, message: "\u5C0F\u4E91\u96C0\u80FD\u529B\u5DF2\u5173\u95ED\uFF08\u8BBE\u7F6E\u9875 \u2192 \u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\uFF09\u3002\u8981\u7528\u5C31\u5148\u628A\u5F00\u5173\u6253\u5F00\u3002" };
     }
-    const cli = await deps.resolveCli();
-    if (cli === void 0) {
-      deps.log("\u5C0F\u4E91\u96C0 CLI \u6CA1\u627E\u5230\uFF0C\u81EA\u52A8\u5B89\u88C5\u4E5F\u6CA1\u6210\u529F\uFF08\u8FDC\u63A7/\u8BC6\u56FE\u4E0D\u53D7\u5F71\u54CD\uFF09", { autoInstall: options.autoInstall ?? true });
-      return {
-        ok: false,
-        message: "\u6CA1\u627E\u5230 pippit-tool-cli\uFF0C\u81EA\u52A8\u5B89\u88C5\u4E5F\u5931\u8D25\u4E86\u3002\u624B\u5DE5\u5B89\u88C5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300Cnpx @pippit-dev/cli@latest install\u300D\uFF0C\u88C5\u5B8C\u518D\u8BD5\u4E00\u6B21\u3002"
-      };
+    const locateCli = deps.locateCli ?? (() => locateXyqCli());
+    const present = deps.locateCli !== void 0 ? locateCli() : await deps.resolveCli();
+    if (present === void 0) {
+      const ensured = await healer.ensureCli(options.autoInstall === true);
+      if (!ensured.ok) return { ok: false, message: ensured.message ?? "\u6CA1\u627E\u5230 pippit-tool-cli" };
     }
     if (config.accessKey === "") {
       return {
         ok: false,
         message: [
           "\u5C0F\u4E91\u96C0\u8FD8\u6CA1\u586B Access Key\u3002\u4EFB\u9009\u4E00\u5904\u586B\uFF08\u4E09\u5904\u7B49\u4EF7\uFF09\uFF1A",
-          "\u2460 \u8BBE\u7F6E\u9875 \u2192\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u2192 Access Key \u4E00\u680F\uFF1B",
+          "\u2460 \u8BBE\u7F6E\u9875 \u2192\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u2192 Access Key \u4E00\u680F\uFF1B",
           `\u2461 \u6216\u76F4\u63A5\u6539\u914D\u7F6E\u6587\u4EF6 ${deps.configFile} \u7684 accessKey \u5B57\u6BB5\uFF08\u6539\u5B8C\u91CD\u542F\u5BBF\u4E3B\uFF09\uFF1B`,
           "\u2462 \u6216\u8BBE\u73AF\u5883\u53D8\u91CF XYQ_ACCESS_KEY\uFF08\u63D2\u4EF6\u5C31\u662F\u628A\u5B83\u4F5C\u4E3A\u73AF\u5883\u53D8\u91CF\u4EA4\u7ED9 CLI \u7684\uFF09\u3002",
           "Key \u5728\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u91CC\u5EFA\u3002"
@@ -2531,7 +3081,7 @@ ${result.stderr}`;
         ok: false,
         message: [
           "\u5C0F\u4E91\u96C0 Access Key \u6CA1\u751F\u6548\uFF08\u8FC7\u671F\u6216\u65E0\u6548\uFF09\u3002",
-          "\u53BB\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u66F4\u65B0\uFF0C\u7136\u540E\u586B\u5230\u8BBE\u7F6E\u9875\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\uFF0C",
+          "\u53BB\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u66F4\u65B0\uFF0C\u7136\u540E\u586B\u5230\u8BBE\u7F6E\u9875\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\uFF0C",
           `\u6216\u6539\u914D\u7F6E\u6587\u4EF6 ${deps.configFile} \u7684 accessKey\uFF0C\u6216\u8BBE\u73AF\u5883\u53D8\u91CF XYQ_ACCESS_KEY\u3002`
         ].join(""),
         needsUser: true
@@ -2692,11 +3242,11 @@ ${result.stderr}`;
       const sessionKey = input.sessionKey ?? "default";
       const budget = budgetOf(sessionKey);
       if (config.budget.images > 0 && budget.images >= config.budget.images) {
-        return { ok: false, message: `\u672C\u4F1A\u8BDD\u7684\u751F\u56FE\u989D\u5EA6\u5DF2\u7528\u5B8C\uFF08\u4E0A\u9650 ${config.budget.images} \u5F20\uFF0C\u53EF\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u8C03\u6574\uFF09` };
+        return { ok: false, message: `\u672C\u4F1A\u8BDD\u7684\u751F\u56FE\u989D\u5EA6\u5DF2\u7528\u5B8C\uFF08\u4E0A\u9650 ${config.budget.images} \u5F20\uFF0C\u53EF\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u91CC\u8C03\u6574\uFF09` };
       }
       const model = (input.model ?? config.defaultImageModel).trim();
       if (model === "") {
-        return { ok: false, message: "\u6CA1\u6307\u5B9A\u56FE\u7247\u6A21\u578B\u3002\u5148\u7528 `model list --type image` \u67E5\u53EF\u7528\u6A21\u578B\uFF0C\u6216\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u8BBE\u9ED8\u8BA4\u56FE\u7247\u6A21\u578B\u3002" };
+        return { ok: false, message: "\u6CA1\u6307\u5B9A\u56FE\u7247\u6A21\u578B\u3002\u5148\u7528 `model list --type image` \u67E5\u53EF\u7528\u6A21\u578B\uFF0C\u6216\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u91CC\u8BBE\u9ED8\u8BA4\u56FE\u7247\u6A21\u578B\u3002" };
       }
       const args = ["generate-image", "--prompt", input.prompt, "--model", model];
       for (const image of input.images ?? []) {
@@ -2820,7 +3370,7 @@ ${result.stderr}`;
       const sessionKey = input.sessionKey ?? "default";
       const budget = budgetOf(sessionKey);
       if (config.budget.videos > 0 && budget.videos >= config.budget.videos) {
-        return { ok: false, message: `\u672C\u4F1A\u8BDD\u7684\u89C6\u9891\u989D\u5EA6\u5DF2\u7528\u5B8C\uFF08\u4E0A\u9650 ${config.budget.videos} \u6761\uFF0C\u53EF\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u8C03\u6574\uFF09` };
+        return { ok: false, message: `\u672C\u4F1A\u8BDD\u7684\u89C6\u9891\u989D\u5EA6\u5DF2\u7528\u5B8C\uFF08\u4E0A\u9650 ${config.budget.videos} \u6761\uFF0C\u53EF\u5728\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u91CC\u8C03\u6574\uFF09` };
       }
       const model = (input.model ?? config.defaultVideoModel).trim();
       if (model === "") return { ok: false, message: "\u6CA1\u6307\u5B9A\u89C6\u9891\u6A21\u578B\uFF08\u9ED8\u8BA4 Seedance_2.0_mini_lite\uFF0C\u53EF\u5728\u8BBE\u7F6E\u91CC\u6539\uFF09" };
@@ -3055,7 +3605,7 @@ function xyqFileHandler(deps) {
 
 // src/xyq/skill.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import path9 from "node:path";
+import path12 from "node:path";
 var XYQ_SKILL_NAME = "dafeiyu-xyq";
 var XYQ_GUIDE_FALLBACK = [
   "# \u751F\u6210\u901A\u9053\uFF1A\u5C0F\u4E91\u96C0 vs \u5373\u68A6",
@@ -3073,7 +3623,7 @@ var cachedBody2;
 function readXyqSkillBody(assetsRoot) {
   if (cachedBody2 !== void 0) return cachedBody2;
   try {
-    cachedBody2 = stripFrontmatter2(readFileSync3(path9.join(assetsRoot, "SKILL.md"), "utf8"));
+    cachedBody2 = stripFrontmatter2(readFileSync3(path12.join(assetsRoot, "SKILL.md"), "utf8"));
   } catch {
     cachedBody2 = XYQ_GUIDE_FALLBACK;
   }
@@ -3258,398 +3808,9 @@ function xyqTools(service, deps = {}) {
   ];
 }
 
-// src/xyq/cli.ts
-import { spawn as spawn2 } from "node:child_process";
-import fs6 from "node:fs";
-import os2 from "node:os";
-import path10 from "node:path";
-function platformDir() {
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
-  if (process.platform === "win32") return `win32-${arch}`;
-  if (process.platform === "darwin") return `darwin-${arch}`;
-  return `linux-${arch}`;
-}
-function binaryName() {
-  return process.platform === "win32" ? "pippit-tool-cli.exe" : "pippit-tool-cli";
-}
-function cachedCliCandidates(home = os2.homedir()) {
-  const base = path10.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
-  return [
-    path10.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
-    path10.join(base, "node_modules", ".bin", binaryName())
-  ];
-}
-function ensureCliScript(home = os2.homedir()) {
-  return path10.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
-}
-var defaultCliRunner = (args, options) => new Promise((resolve) => {
-  const child = spawn2(cliPathForRun(args), args.slice(1), {
-    env: { ...process.env, ...options.env },
-    windowsHide: true,
-    // 同 sprite/browser.ts 的理由：**别继承宿主的工作目录**。
-    // 子进程以某个目录为 cwd 时，Windows 不允许把那个目录改名；DSH 自更新恰恰要把
-    // `D:\FeiYu` 改成 `D:\FeiYu.old-*`，一个还活着的子进程就能让安装器连试 10 次
-    // `error 32` 后放弃（2026-11-12 现场就是这样）。CLI 跑完就退，但别赌它来得及。
-    cwd: os2.tmpdir()
-  });
-  let stdout = "";
-  let stderr = "";
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    try {
-      child.kill();
-    } catch {
-    }
-  }, options.timeoutMs);
-  child.stdout?.on("data", (chunk) => {
-    stdout += chunk.toString("utf8");
-  });
-  child.stderr?.on("data", (chunk) => {
-    stderr += chunk.toString("utf8");
-  });
-  child.on("error", (error) => {
-    clearTimeout(timer);
-    resolve({ code: -1, stdout, stderr: `${stderr}${String(error?.message ?? error)}`, timedOut });
-  });
-  child.on("close", (code) => {
-    clearTimeout(timer);
-    resolve({ code: code ?? -1, stdout, stderr, timedOut });
-  });
-});
-function cliPathForRun(args) {
-  return args[0] ?? "";
-}
-async function installCli(run, options = {}) {
-  const home = options.home ?? os2.homedir();
-  const script = ensureCliScript(home);
-  if (!fs6.existsSync(script)) return void 0;
-  const result = await run([process.execPath, script], { env: {}, timeoutMs: options.timeoutMs ?? 3e5 });
-  const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    try {
-      const parsed = JSON.parse(lines[i]);
-      if (typeof parsed.cli_path === "string" && parsed.cli_path !== "") return parsed.cli_path;
-    } catch {
-    }
-  }
-  return void 0;
-}
-async function resolveCliPath(run, options = {}) {
-  const home = options.home ?? os2.homedir();
-  for (const candidate of cachedCliCandidates(home)) {
-    if (fs6.existsSync(candidate)) return candidate;
-  }
-  const installed = await installCli(run, { home });
-  if (installed !== void 0 && fs6.existsSync(installed)) {
-    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path10.basename(installed) });
-    return installed;
-  }
-  return void 0;
-}
-
 // src/xyq/jimeng/service.ts
 import os5 from "node:os";
 import path13 from "node:path";
-
-// src/xyq/selfheal.ts
-import fs8 from "node:fs";
-import os4 from "node:os";
-import path12 from "node:path";
-
-// src/xyq/jimeng/cli.ts
-import fs7 from "node:fs";
-import os3 from "node:os";
-import path11 from "node:path";
-function exeName(base, platform) {
-  return platform === "win32" ? `${base}.exe` : base;
-}
-function releaseVersion(dirName) {
-  const match = dirName.match(/jimeng-novel-(\d+\.\d+\.\d+)/);
-  if (!match || match[1] === void 0) return [0, 0, 0];
-  return match[1].split(".").map((part) => Number.parseInt(part, 10) || 0);
-}
-function compareVersion(a, b) {
-  const left = releaseVersion(a);
-  const right = releaseVersion(b);
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-function fromPath(pathValue, fileName, platform, exists) {
-  if (pathValue === void 0 || pathValue === "") return [];
-  const found = [];
-  for (const dir of pathValue.split(path11.delimiter)) {
-    if (dir.trim() === "") continue;
-    const candidate = path11.join(dir, fileName);
-    if (exists(candidate)) found.push(candidate);
-    if (platform === "win32" && !fileName.toLowerCase().endsWith(".exe") && exists(`${candidate}.exe`)) found.push(`${candidate}.exe`);
-  }
-  return found;
-}
-function firstExisting(candidates, exists) {
-  for (const candidate of candidates) {
-    if (candidate !== void 0 && candidate !== "" && exists(candidate)) return candidate;
-  }
-  return void 0;
-}
-function locateJimengCli(deps = {}) {
-  const env = deps.env ?? process.env;
-  const home = deps.home ?? os3.homedir();
-  const platform = deps.platform ?? process.platform;
-  const exists = deps.exists ?? ((file) => {
-    try {
-      return fs7.statSync(file).isFile();
-    } catch {
-      return false;
-    }
-  });
-  const listDir = deps.listDir ?? ((dir) => {
-    try {
-      return fs7.readdirSync(dir);
-    } catch {
-      return [];
-    }
-  });
-  const novelName = exeName("jimeng-novel", platform);
-  const releasesRoot = path11.join(home, ".local", "share", "jimeng-novel", "releases");
-  const releases = listDir(releasesRoot).filter((name) => name.startsWith("jimeng-novel-")).sort(compareVersion).reverse();
-  const novelCandidates = [
-    env.JIMENG_NOVEL_CLI,
-    ...releases.map((name) => path11.join(releasesRoot, name, novelName)),
-    path11.join(home, ".local", "bin", novelName),
-    ...fromPath(env.PATH, novelName, platform, exists)
-  ];
-  const canvasName = exeName("dreamina-canvas", platform);
-  const canvasCandidates = [
-    env.DREAMINA_CANVAS_CLI,
-    path11.join(home, "bin", canvasName),
-    path11.join(home, ".local", "bin", canvasName),
-    ...fromPath(env.PATH, canvasName, platform, exists)
-  ];
-  const novel = firstExisting(novelCandidates, exists);
-  const canvas = firstExisting(canvasCandidates, exists);
-  return {
-    ...novel === void 0 ? {} : { novel },
-    ...canvas === void 0 ? {} : { canvas }
-  };
-}
-var JIMENG_INSTALL_HINT = "curl.exe -s https://jimeng.jianying.com/novel-cli | bash\uFF08Windows \u4E0A\u6CA1\u6709 bash\uFF1A\u5B98\u65B9\u811A\u672C\u5185\u5D4C\u4E86 PowerShell \u5B89\u88C5\u5668\uFF0C\u89C1 SKILL \u7684\u5B89\u88C5\u6BB5\uFF09";
-
-// src/xyq/selfheal.ts
-var CANVAS_INSTALL_URL = "https://jimeng.jianying.com/canvas-cli/install.ps1";
-var NOVEL_CLI_URL = "https://jimeng.jianying.com/novel-cli";
-var MANUAL_INSTALL_CANVAS = "\u5728 PowerShell \u91CC\u8DD1\uFF1Airm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex";
-var MANUAL_INSTALL_NOVEL = `\u77ED\u5267 CLI\uFF08Windows / PowerShell\uFF0C\u628A\u4E0B\u9762\u6574\u6BB5\u7C98\u8FDB PowerShell \u8DD1\uFF09\uFF1A$s=(irm 'https://jimeng.jianying.com/novel-cli'); $b=[regex]::Match($s,"DEFAULT_WINDOWS_INSTALLER_BASE64='([^']+)'").Groups[1].Value; $p=Join-Path $env:TEMP 'jimeng-novel-install.ps1'; [IO.File]::WriteAllText($p,[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b))); & $p`;
-function truncate(text, limit = 400) {
-  const trimmed = text.trim();
-  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit)}\u2026`;
-}
-function defaultWriteTempScript(name, content) {
-  const dir = fs8.mkdtempSync(path12.join(os4.tmpdir(), "jimeng-install-"));
-  const file = path12.join(dir, name);
-  fs8.writeFileSync(file, content, "utf8");
-  return {
-    file,
-    cleanup: () => {
-      try {
-        fs8.rmSync(dir, { recursive: true, force: true });
-      } catch {
-      }
-    }
-  };
-}
-function extractWindowsInstaller(script) {
-  const match = script.match(/DEFAULT_WINDOWS_INSTALLER_BASE64='([A-Za-z0-9+/=]+)'/);
-  if (!match || match[1] === void 0) return void 0;
-  try {
-    return Buffer.from(match[1], "base64").toString("utf8");
-  } catch {
-    return void 0;
-  }
-}
-function createJimengSelfHealer(deps) {
-  const platform = deps.platform ?? process.platform;
-  const now = deps.now ?? Date.now;
-  const installTimeout = deps.installTimeoutMs ?? 12e4;
-  const statusTimeout = deps.statusTimeoutMs ?? 2e4;
-  const loginTimeout = deps.loginTimeoutMs ?? 6e4;
-  const installBackoff = deps.installBackoffMs ?? 10 * 6e4;
-  const loginBackoff = deps.loginBackoffMs ?? 5 * 6e4;
-  const powershell = deps.powershell ?? deps.env?.JIMENG_POWERSHELL ?? (platform === "win32" ? "powershell.exe" : "powershell");
-  const fetchText = deps.fetchText ?? (async (url) => {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`\u4E0B\u8F7D\u5931\u8D25 HTTP ${response.status}`);
-    return await response.text();
-  });
-  const writeTemp = deps.writeTempScript ?? defaultWriteTempScript;
-  const locate = () => (deps.locate ?? (() => locateJimengCli(deps.locateDeps)))();
-  let installInFlight;
-  let lastInstall;
-  let loginInFlight;
-  let lastLogin;
-  async function runQuiet(args, timeoutMs) {
-    const result = await deps.run(args, { env: {}, timeoutMs });
-    const detail = truncate(`${result.stdout}
-${result.stderr}`);
-    if (result.timedOut) return { ok: false, detail: `\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\uFF09${detail === "" ? "" : `\uFF1A${detail}`}` };
-    if (result.code !== 0) return { ok: false, detail: detail === "" ? `\u9000\u51FA\u7801 ${result.code}` : detail };
-    return { ok: true, detail };
-  }
-  async function installCanvas() {
-    const command = `irm '${CANVAS_INSTALL_URL}' | iex`;
-    return runQuiet([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-Command", command], installTimeout);
-  }
-  async function installNovel() {
-    let script;
-    try {
-      script = await fetchText(NOVEL_CLI_URL);
-    } catch (error) {
-      return { ok: false, detail: `\u4E0B\u8F7D ${NOVEL_CLI_URL} \u5931\u8D25\uFF1A${String(error?.message ?? error)}` };
-    }
-    const installer = extractWindowsInstaller(script);
-    if (installer === void 0) return { ok: false, detail: "novel-cli \u811A\u672C\u91CC\u6CA1\u627E\u5230\u5185\u5D4C\u7684 Windows \u5B89\u88C5\u5668" };
-    const temp = writeTemp("jimeng-novel-install.ps1", installer);
-    try {
-      return await runQuiet([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", temp.file], installTimeout);
-    } finally {
-      temp.cleanup();
-    }
-  }
-  async function doInstall() {
-    const current = locate();
-    if (current.novel !== void 0) return { ok: true, cliPath: current.novel };
-    if (platform !== "win32") {
-      const message2 = `\u8FD9\u53F0\u673A\u5668\u4E0D\u662F Windows\uFF0C\u63D2\u4EF6\u4E0D\u81EA\u52A8\u8DD1\u5B89\u88C5\u811A\u672C\u3002\u8BF7\u624B\u5DE5\u5B89\u88C5\u5373\u68A6 CLI \u540E\u91CD\u8BD5\u3002${MANUAL_INSTALL_NOVEL}`;
-      lastInstall = { at: now(), ok: false, message: message2 };
-      return { ok: false, message: message2 };
-    }
-    deps.log("\u5373\u68A6 CLI \u6CA1\u88C5\uFF0C\u5F00\u59CB\u81EA\u52A8\u5B89\u88C5\uFF08\u753B\u5E03 + \u77ED\u5267\uFF09", { platform });
-    const canvas = await installCanvas();
-    const novel = await installNovel();
-    const after = locate();
-    if (after.novel !== void 0) {
-      deps.log("\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5B8C\u6210", { path: path12.basename(after.novel) });
-      lastInstall = { at: now(), ok: true, message: "" };
-      return { ok: true, cliPath: after.novel };
-    }
-    const reasons = [];
-    if (!canvas.ok) reasons.push(`\u753B\u5E03\uFF1A${canvas.detail}`);
-    if (!novel.ok) reasons.push(`\u77ED\u5267\uFF1A${novel.detail}`);
-    if (reasons.length === 0) {
-      reasons.push("\u5B89\u88C5\u811A\u672C\u8DD1\u5B8C\u4E86\uFF0C\u4F46\u6CA1\u5728 ~/.local/share/jimeng-novel/releases \u4E0B\u627E\u5230 jimeng-novel.exe");
-      reasons.push("\u82E5\u63D0\u793A\u6587\u4EF6\u88AB\u5360\u7528\uFF0C\u628A %USERPROFILE%\\bin\\.dreamina-canvas.install.* \u91CC\u7684 dreamina-canvas_windows_amd64.exe \u624B\u52A8\u6539\u540D\u4E3A dreamina-canvas.exe");
-    }
-    const message = `\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF1A${reasons.join("\uFF1B")}\u3002${MANUAL_INSTALL_CANVAS}`;
-    deps.log("\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF08\u4E91\u96C0/\u5176\u5B83\u529F\u80FD\u4E0D\u53D7\u5F71\u54CD\uFF09", { reason: truncate(reasons.join("\uFF1B"), 200) });
-    lastInstall = { at: now(), ok: false, message };
-    return { ok: false, message };
-  }
-  async function ensureCli(autoInstall) {
-    const current = locate();
-    if (current.novel !== void 0) return { ok: true, cliPath: current.novel };
-    if (!autoInstall) {
-      return {
-        ok: false,
-        message: `\u6CA1\u627E\u5230\u5373\u68A6 CLI\uFF08jimeng-novel\uFF09\u3002\u672C\u6B21\u8C03\u7528\u6CA1\u5F00\u81EA\u52A8\u5B89\u88C5\uFF08autoInstall:false\uFF0C\u9ED8\u8BA4\u5C31\u662F\u5173\u7684\uFF09\uFF1A\u9700\u8981\u81EA\u52A8\u88C5\u5C31\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 autoInstall:true\uFF1B\u624B\u5DE5\u5B89\u88C5\uFF1A${MANUAL_INSTALL_CANVAS}\uFF1B${MANUAL_INSTALL_NOVEL}`
-      };
-    }
-    if (lastInstall !== void 0 && !lastInstall.ok && now() - lastInstall.at < installBackoff) {
-      return { ok: false, message: `${lastInstall.message}\uFF08${Math.ceil((installBackoff - (now() - lastInstall.at)) / 6e4)} \u5206\u949F\u5185\u4E0D\u518D\u91CD\u8BD5\uFF0C\u907F\u514D\u53CD\u590D\u4E0B\u8F7D\uFF09` };
-    }
-    if (installInFlight !== void 0) return installInFlight;
-    installInFlight = doInstall().finally(() => {
-      installInFlight = void 0;
-    });
-    return installInFlight;
-  }
-  async function readLogin(cliPath) {
-    const result = await deps.run([cliPath, "credit", "get", "-j"], { env: {}, timeoutMs: statusTimeout });
-    const raw = result.stdout.trim();
-    if (raw === "") return void 0;
-    try {
-      const parsed = JSON.parse(raw);
-      const error = parsed.error !== null && typeof parsed.error === "object" ? parsed.error : void 0;
-      const details = error?.details !== null && typeof error?.details === "object" ? error.details : void 0;
-      const auth = details?.auth !== null && typeof details?.auth === "object" ? details.auth : void 0;
-      if (error?.code === "AUTH_FAILED" || auth?.nextAction === "login") return false;
-      if (parsed.status === "ok" || parsed.status === "success") return true;
-      if (error === void 0 && parsed.data !== void 0 && parsed.data !== null) return true;
-      return void 0;
-    } catch {
-      return void 0;
-    }
-  }
-  async function startLogin(cliPath) {
-    if (lastLogin !== void 0 && now() - lastLogin.at < loginBackoff) return { ok: false, message: lastLogin.message };
-    if (loginInFlight !== void 0) return loginInFlight;
-    loginInFlight = doLogin(cliPath).finally(() => {
-      loginInFlight = void 0;
-    });
-    return loginInFlight;
-  }
-  async function doLogin(cliPath) {
-    deps.log("\u5373\u68A6\u6CA1\u767B\u5F55\uFF0C\u81EA\u52A8\u53D1\u8D77\u6D4F\u89C8\u5668\u6388\u6743\uFF08\u9700\u8981\u7528\u6237\u70B9\u94FE\u63A5\uFF09", { path: path12.basename(cliPath) });
-    const result = await deps.run([cliPath, "login", "--non-interactive", "-j"], { env: {}, timeoutMs: loginTimeout });
-    if (result.timedOut) {
-      const message2 = `\u5373\u68A6\u6388\u6743\u53D1\u8D77\u8D85\u65F6\uFF08${Math.round(loginTimeout / 1e3)} \u79D2\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D`;
-      lastLogin = { at: now(), message: message2 };
-      return { ok: false, message: message2 };
-    }
-    let link = "";
-    let nextCommand = "";
-    try {
-      const parsed = JSON.parse(result.stdout.trim());
-      const data = parsed.data !== null && typeof parsed.data === "object" ? parsed.data : void 0;
-      const challenge = data?.challenge !== null && typeof data?.challenge === "object" ? data.challenge : void 0;
-      if (typeof challenge?.verificationUriComplete === "string" && challenge.verificationUriComplete !== "") link = challenge.verificationUriComplete;
-      else if (typeof challenge?.verificationUri === "string" && challenge.verificationUri !== "") link = challenge.verificationUri;
-      if (typeof data?.nextCommand === "string" && data.nextCommand !== "") nextCommand = data.nextCommand;
-      if (link === "" && data?.status === "logged_in") return { ok: true };
-    } catch {
-    }
-    if (link === "") {
-      const detail = truncate(`${result.stdout}
-${result.stderr}`);
-      const message2 = `\u5373\u68A6\u6388\u6743\u6CA1\u62FF\u5230\u94FE\u63A5\uFF08${detail === "" ? "CLI \u6CA1\u6709\u8F93\u51FA" : detail}\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D`;
-      lastLogin = { at: now(), message: message2 };
-      return { ok: false, message: message2 };
-    }
-    const lines = [`\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\u3002**\u70B9\u8FD9\u4E2A\u94FE\u63A5\u6388\u6743**\uFF1A${link}`, "\u6388\u6743\u5B8C\u544A\u8BC9\u6211\uFF0C\u6211\u63A5\u7740\u5F80\u4E0B\u8D70\uFF08\u4E0D\u7528\u518D\u95EE\u6211\u522B\u7684\uFF09\u3002"];
-    if (nextCommand !== "") lines.push(`\u6388\u6743\u540E\u9700\u8981\u7EED\u7B49\u7684\u547D\u4EE4\uFF1A${nextCommand}`);
-    const message = lines.join("\n");
-    lastLogin = { at: now(), message };
-    return { ok: false, message };
-  }
-  return {
-    ensureCli,
-    readLogin,
-    /** 第二步：授权在不在（只在确认「未登录」时发一次授权）。 */
-    async ensureLogin(cliPath, autoLogin) {
-      const loggedIn = await readLogin(cliPath);
-      if (loggedIn === true) return { ok: true };
-      if (loggedIn === void 0) return { ok: true };
-      if (!autoLogin) {
-        return {
-          ok: false,
-          message: `\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\uFF0C\u672C\u6B21\u8C03\u7528\u5173\u6389\u4E86\u81EA\u52A8\u6388\u6743\uFF08autoLogin:false\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D\uFF0C\u518D\u628A\u8FD4\u56DE\u7684\u94FE\u63A5\u7ED9\u7528\u6237\u70B9\u3002`
-        };
-      }
-      return startLogin(cliPath);
-    },
-    /** 测试/排障用：清掉进程内的退避与单飞状态。 */
-    reset() {
-      installInFlight = void 0;
-      lastInstall = void 0;
-      loginInFlight = void 0;
-      lastLogin = void 0;
-    }
-  };
-}
-
-// src/xyq/jimeng/service.ts
 function parseEnvelope(stdout) {
   const lines = stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -3868,7 +4029,9 @@ ${result.stderr}`;
       const answered = await call([ready.cli, "model", "list", "--type", kind, "-j"], 9e4);
       if (answered.message !== void 0) return { ok: false, message: answered.message };
       const data = answered.envelope?.data;
-      const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+      const record = data !== null && typeof data === "object" ? data : void 0;
+      const list = Array.isArray(record?.models) ? record?.models : Array.isArray(record?.items) ? record?.items : Array.isArray(data) ? data : [];
+      const items = list;
       const models = [];
       for (const item of items) {
         const key = typeof item.key === "string" && item.key !== "" ? item.key : typeof item.name === "string" ? item.name : "";
@@ -3887,17 +4050,21 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // src/xyq/guidance.ts
 function xyqGuidance(freedom) {
   const lines = [
-    "## \u751F\u6210\u901A\u9053\uFF08\u56FE\u7247 / \u89C6\u9891\uFF09",
-    "\u672C\u673A\u63A5\u5165\u4E86\u4E24\u6761\u751F\u6210\u901A\u9053\uFF0C\u7528\u5DE5\u5177\u53C2\u6570 `channel` \u9009\uFF1A`channel=xyq`\uFF08\u9ED8\u8BA4\uFF0C\u5C0F\u4E91\u96C0\uFF09/ `channel=jimeng`\uFF08\u5373\u68A6\uFF09\u3002",
-    "\u5DE5\u5177\uFF1A`generate_image`\u3001`generate_video`\u3001`xyq_balance`\uFF08\u4E24\u6761\u901A\u9053\u5404\u4E00\u6BB5\u989D\u5EA6\uFF09\u3001`xyq_models`\uFF08\u5148\u5B9A\u901A\u9053\u518D\u67E5\u6A21\u578B\uFF09\u3002",
-    "- \u5C0F\u4E91\u96C0\uFF08xyq\uFF09\uFF1A\u8425\u9500\u6210\u7247\u3001\u77ED\u5267 agent \u5168\u6D41\u7A0B\u3001Canvas \u753B\u5E03\u5DE5\u7A0B\u5316\u3002Access Key \u5728\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u586B\uFF0C\u79EF\u5206\u8BA1\u8D39\u3002",
+    "## \u5927\u80A5\u9C7C-\u9CB8\u9C7C\u505A\u68A6\uFF08\u56FE\u7247 / \u89C6\u9891\u751F\u6210\uFF09",
+    "\u8FD9\u4E2A\u80FD\u529B\u53EB\u300C\u5927\u80A5\u9C7C-\u9CB8\u9C7C\u505A\u68A6\u300D\uFF0C\u4E0B\u8BBE\u4E24\u6761\u901A\u9053\uFF0C\u7528\u5DE5\u5177\u53C2\u6570 `channel` \u9009\uFF1A`channel=xyq`\uFF08\u9ED8\u8BA4\uFF0C\u5C0F\u4E91\u96C0\uFF09/ `channel=jimeng`\uFF08\u5373\u68A6\uFF09\u3002",
+    "\u5DE5\u5177\uFF1A`generate_image`\u3001`generate_video`\u3001`xyq_balance`\uFF08\u4E24\u6761\u901A\u9053\u5404\u4E00\u6BB5\u989D\u5EA6\uFF09\u3001`xyq_models`\uFF08\u5148\u5B9A\u901A\u9053\u518D\u67E5\u6A21\u578B\uFF09\u3001`xyq_guide`\uFF08\u672C\u6307\u5357\u515C\u5E95\uFF09\u3002",
+    "- \u5C0F\u4E91\u96C0\uFF08xyq\uFF09\uFF1A\u8425\u9500\u6210\u7247\u3001\u77ED\u5267 agent \u5168\u6D41\u7A0B\u3001Canvas \u753B\u5E03\u5DE5\u7A0B\u5316\u3002Access Key \u5728\u300C\u5927\u80A5\u9C7C \u2192 \u9CB8\u9C7C\u505A\u68A6\u300D\u91CC\u586B\uFF0C\u79EF\u5206\u8BA1\u8D39\u3002",
     "- \u5373\u68A6\uFF08jimeng\uFF09\uFF1A\u5373\u68A6\u753B\u5E03\u4E0E\u77ED\u5267\u521B\u4F5C\uFF08\u753B\u5E03 CLI `dreamina-canvas` + \u77ED\u5267 CLI `jimeng-novel`\uFF09\uFF0C\u753B\u5E03/\u5206\u955C/\u5BFC\u6F14\u53F0\u7C7B\u9700\u6C42\u3002\u79EF\u5206\u8BA1\u8D39\uFF0C\u767B\u5F55\u8D70**\u6D4F\u89C8\u5668\u6388\u6743**\uFF08\u4E0D\u9700\u8981 Key\uFF09\u3002",
     "\u9009\u62E9\u53E3\u5F84\uFF1A\u7528\u6237\u70B9\u540D\u300C\u5373\u68A6 / Dreamina\u300D\u2192 jimeng\uFF1B\u70B9\u540D\u300C\u5C0F\u4E91\u96C0 / xyq\u300D\u2192 xyq\uFF1B\u6CA1\u70B9\u540D \u2192 \u9ED8\u8BA4 xyq\uFF0C\u53EA\u6709\u660E\u786E\u63D0\u51FA\u5373\u68A6\u753B\u5E03\u3001\u5373\u68A6\u77ED\u5267\u3001Dreamina \u65F6\u624D\u5207 jimeng\u3002",
     "\u4F7F\u7528\u987A\u5E8F\uFF1A`xyq_models` \u67E5\u6A21\u578B\uFF08\u4E24\u6761\u901A\u9053\u6A21\u578B\u540D\u4E0D\u901A\u7528\uFF09\u2192 `xyq_balance` \u770B\u989D\u5EA6 \u2192 \u751F\u6210 \u2192 \u628A\u5DE5\u5177\u8FD4\u56DE\u7684**\u672C\u5730\u6587\u4EF6\u7EDD\u5BF9\u8DEF\u5F84**\u544A\u8BC9\u7528\u6237\u3002",
-    "\u6210\u672C\uFF1A\u4E91\u96C0\u89C6\u9891\u6309\u65F6\u957F\u8BA1\u8D39\uFF08Seedance 2.0 Mini \u4F53\u9A8C\u7248\u7EA6 4 \u79EF\u5206/\u79D2\uFF09\u3001\u56FE\u7247\u6309\u5F20\uFF1B\u5373\u68A6\u6309\u79EF\u5206\u8BA1\u8D39\uFF0C`credit estimate` \u624D\u662F\u51C6\u6570\uFF08\u5DE5\u5177\u4E0D\u66FF\u7528\u6237\u62A5\u4EF7\uFF09\u3002",
-    '\u8C03\u7528\u524D\u81EA\u6108\uFF1A\u5DE5\u5177\u4F1A\u5148\u8865\u73AF\u5883\u2014\u2014**\u6CA1\u767B\u5F55\u5C31\u53D1\u8D77\u4E00\u6B21\u6D4F\u89C8\u5668\u6388\u6743\u5E76\u628A\u94FE\u63A5\u7ED9\u7528\u6237**\uFF08\u9ED8\u8BA4\u5F00\uFF09\uFF1B**\u7F3A CLI \u4E0D\u4F1A\u81EA\u52A8\u88C5**\uFF08\u9ED8\u8BA4\u5173\uFF0C\u907F\u514D\u4E00\u53E5"\u753B\u5F20\u56FE"\u987A\u5E26\u5728\u4F60\u673A\u5668\u4E0A\u6267\u884C\u8FDC\u7AEF\u5B89\u88C5\u811A\u672C\uFF09\uFF0C\u7F3A\u4E86\u5C31\u62A5\u9519\u5E76\u544A\u8BC9\u7528\u6237\u300C\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 `autoInstall:true`\u300D\uFF0C\u6216\u624B\u5DE5\u88C5\u3002\u88C5\u4E86\u6CA1\u88C5\u3001\u767B\u4E86\u6CA1\u767B\u90FD\u4F1A\u7559\u4E00\u884C\u4E2D\u6587\u65E5\u5FD7\u3002',
-    "\u81EA\u6108\u5F00\u5173\uFF1A`autoLogin:false` \u53EA\u62A5\u544A\u4E0D\u53D1\u8D77\u6388\u6743\uFF1B`autoInstall:true` \u624D\u5141\u8BB8\u81EA\u52A8\u4E0B\u8F7D\u5B89\u88C5\uFF08\u4EC5 Windows\uFF0C\u7EA6 2 \u5206\u949F\uFF0C\u8D85\u65F6/\u5931\u8D25\u4F1A\u9000\u907F\uFF0C\u4E0D\u4F1A\u53CD\u590D\u4E0B\u8F7D\uFF09\u3002",
-    "\u51FA\u9519\u600E\u4E48\u8BFB\uFF1A\u5373\u68A6\u901A\u9053\u6CA1\u88C5 / \u6CA1\u767B\u5F55\u65F6\uFF0C\u5DE5\u5177\u4F1A\u8FD4\u56DE\u4E2D\u6587\u539F\u56E0 + **\u4E0B\u4E00\u6B65\u8BE5\u8DD1\u7684\u547D\u4EE4\uFF08\u542B\u7EDD\u5BF9\u8DEF\u5F84\uFF09**\uFF1B\u628A\u8FD9\u53E5\u8BDD\u539F\u6837\u8F6C\u7ED9\u7528\u6237\uFF0C\u8BA9\u4ED6\u53BB\u7EC8\u7AEF\u8DD1\uFF0C\u522B\u81EA\u5DF1\u53CD\u590D\u91CD\u8BD5\u767B\u5F55\u3002"
+    "\u5B89\u88C5\u4E0E\u767B\u5F55\uFF08\u4E24\u6761\u901A\u9053\u4E0D\u4E00\u6837\uFF0C\u522B\u6DF7\uFF09\uFF1A",
+    "| | \u5C0F\u4E91\u96C0\uFF08xyq\uFF09 | \u5373\u68A6\uFF08jimeng\uFF09 |",
+    "| \u5B89\u88C5 | `npx @pippit-dev/cli@latest install`\uFF08\u4E00\u6B21\u88C5\u597D CLI + \u901A\u7528\u521B\u4F5C Skill + \u77ED\u5267 Skill\uFF1B\u8D85\u65F6 180s\uFF09 | Windows \u5B98\u65B9\u811A\u672C\uFF1A\u753B\u5E03 `irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex`\uFF0C\u77ED\u5267\u4ECE `https://jimeng.jianying.com/novel-cli` \u91CC\u89E3\u51FA\u5185\u5D4C PowerShell \u5B89\u88C5\u5668\uFF08\u8D85\u65F6 120s\uFF09 |",
+    "| \u767B\u5F55 | \u5C0F\u4E91\u96C0\u5B98\u7F51 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key\uFF0C\u586B\u8FDB\u8BBE\u7F6E\u9875\u6216 `xyq.json` \u7684 accessKey | `jimeng-novel login --non-interactive`\uFF0C\u628A\u8FD4\u56DE\u7684\u94FE\u63A5\u7ED9\u7528\u6237\u70B9\uFF08\u6D4F\u89C8\u5668\u6388\u6743\uFF0C\u4E0D\u7528 Key\uFF09 |",
+    "| \u67E5\u989D\u5EA6 | `xyq_balance` \u7684\u4E91\u96C0\u6BB5\uFF08`get-credit-balance`\uFF09 | `xyq_balance` \u7684\u5373\u68A6\u6BB5\uFF08`jimeng-novel credit get`\uFF09 |",
+    "\u8C03\u7528\u524D\u81EA\u6108\uFF1A\u5DE5\u5177\u4F1A\u5148\u81EA\u68C0\u2014\u2014CLI \u5728\u4E0D\u5728\uFF08**\u81EA\u52A8\u5B89\u88C5\u9ED8\u8BA4\u5173**\uFF0C\u53EA\u6709\u663E\u5F0F `autoInstall:true` \u624D\u88C5\uFF09\u3001\u6388\u6743\u5728\u4E0D\u5728\uFF08\u7F3A\u5C31\u53D1\u4E00\u6B21\u6D4F\u89C8\u5668\u6388\u6743\u94FE\u63A5\uFF09\u3002\u88C5\u4E86\u6CA1\u88C5\u3001\u767B\u4E86\u6CA1\u767B\u90FD\u4F1A\u7559\u4E00\u884C\u4E2D\u6587\u65E5\u5FD7\u3002",
+    "\u81EA\u6108\u5F00\u5173\uFF1A`autoInstall` \u9ED8\u8BA4 false\uFF08\u5728\u7528\u6237\u673A\u5668\u4E0A\u8DD1\u8FDC\u7AEF\u811A\u672C\u5FC5\u987B\u663E\u5F0F\u6388\u6743\uFF09\u3001`autoLogin` \u9ED8\u8BA4 true\uFF1B\u4F20 false \u53EA\u62A5\u544A\u4E0D\u52A8\u624B\u3002\u540C\u4E00\u4F1A\u8BDD\u91CC\u5931\u8D25\u7684\u5B89\u88C5\u4F1A\u9000\u907F\uFF0C\u522B\u6307\u671B\u8FDE\u70B9\u51E0\u6B21\u88C5\u597D\u3002",
+    "\u51FA\u9519\u600E\u4E48\u8BFB\uFF1A\u7F3A CLI / \u6CA1\u767B\u5F55\u65F6\u5DE5\u5177\u8FD4\u56DE\u4E2D\u6587\u539F\u56E0 + **\u4E0B\u4E00\u6B65\u8BE5\u8DD1\u7684\u547D\u4EE4\uFF08\u542B\u7EDD\u5BF9\u8DEF\u5F84\uFF09**\uFF1B\u6388\u6743\u94FE\u8DEF\u4E00\u65E6\u88AB\u5224\u8FC7\u671F\uFF0840014 / nextAction=restart\uFF09\u4F1A\u81EA\u52A8\u7528 `--restart` \u91CD\u5F00\u5E76\u7ED9**\u65B0\u94FE\u63A5**\uFF0C\u628A\u6700\u65B0\u90A3\u6761\u8F6C\u7ED9\u7528\u6237\uFF0C\u522B\u590D\u8FF0\u65E7\u94FE\u63A5\u3002"
   ];
   if (freedom === "explicit") lines.push("\u8C03\u7528\u7EA6\u675F\uFF1A**\u53EA\u6709\u7528\u6237\u660E\u786E\u8981\u6C42\u751F\u6210\u56FE\u7247/\u89C6\u9891\u65F6\u624D\u80FD\u8C03\u7528**\uFF1B\u4E0D\u8981\u4E3A\u4E86\u201C\u7701\u4E8B\u201D\u81EA\u884C\u751F\u6210\u3002");
   else if (freedom === "budgeted") lines.push("\u8C03\u7528\u7EA6\u675F\uFF1A\u5F00\u53D1\u4EFB\u52A1\u9700\u8981\u7D20\u6750\u65F6\u53EF\u4EE5\u81EA\u884C\u8C03\u7528\uFF0C\u4F46\u5FC5\u987B\u53D7\u8BBE\u7F6E\u91CC\u7684\u989D\u5EA6\u4E0E\u65F6\u957F\u4E0A\u9650\u7EA6\u675F\uFF1B\u7528\u5B8C\u5C31\u505C\uFF0C\u4E0D\u8981\u91CD\u590D\u751F\u6210\u3002");
@@ -3926,7 +4093,14 @@ function startXyq(ctx, deps) {
     outDir: deps.jimengOutDir ?? path14.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
     ...deps.jimengLocateDeps === void 0 ? {} : { locateDeps: deps.jimengLocateDeps }
   });
-  const service = createXyqService({ configFile, run, resolveCli, log: deps.log, channels: { jimeng: jimengChannel } });
+  const service = createXyqService({
+    configFile,
+    run,
+    resolveCli,
+    locateCli: () => locateXyqCli(),
+    log: deps.log,
+    channels: { jimeng: jimengChannel }
+  });
   const disposers = [];
   let unregister;
   let started = false;

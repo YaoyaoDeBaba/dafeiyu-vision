@@ -18,6 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { CliRunner } from './cli.js'
 import { locateJimengCli, type JimengCliPaths, type LocateDeps } from './jimeng/cli.js'
+import { locateXyqCli, type LocateXyqOptions } from './cli.js'
 
 export const CANVAS_INSTALL_URL = 'https://jimeng.jianying.com/canvas-cli/install.ps1'
 export const NOVEL_CLI_URL = 'https://jimeng.jianying.com/novel-cli'
@@ -110,7 +111,7 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
   let installInFlight: Promise<EnsureResult> | undefined
   let lastInstall: { at: number; ok: boolean; message: string } | undefined
   let loginInFlight: Promise<EnsureResult> | undefined
-  let lastLogin: { at: number; message: string } | undefined
+  let lastLogin: { at: number; message: string; deviceCode?: string } | undefined
 
   /** 跑一条命令并把输出截断（下载/安装的日志可能很长）。 */
   async function runQuiet(args: string[], timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
@@ -183,7 +184,7 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
       return {
         ok: false,
         message:
-          '没找到即梦 CLI（jimeng-novel）。本次调用没开自动安装（autoInstall:false，默认就是关的）：' +
+          '没找到即梦 CLI（jimeng-novel）。本次调用没开自动安装（autoInstall:false）：' +
           `需要自动装就再调一次并传 autoInstall:true；手工安装：${MANUAL_INSTALL_CANVAS}；${MANUAL_INSTALL_NOVEL}`,
       }
     }
@@ -224,19 +225,91 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
     }
   }
 
-  /** 发起浏览器授权：拿到链接与 nextCommand，**同会话内只发起一次**（失败退避）。 */
+  /**
+   * 读「这次授权已经被服务端判过期」的信号。
+   * 真机证据（2026-11-25）：`login --wait --device-code <旧码>` 返回
+   * `{"error":{"code":"AUTH_FAILED","details":{"auth":{"code":40014,"reason":"authorization_expired","nextAction":"restart"}}}}`。
+   * 只要看到 nextAction=restart / reason=authorization_expired / 40014，就必须**丢掉旧码重新发起**，
+   * 否则会一直把死链接复述给用户（真 bug）。
+   */
+  function isExpiredAuth(text: string): boolean {
+    const raw = text.trim()
+    if (raw === '') return false
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const error = parsed.error !== null && typeof parsed.error === 'object' ? (parsed.error as Record<string, unknown>) : undefined
+      const details = error?.details !== null && typeof error?.details === 'object' ? (error.details as Record<string, unknown>) : undefined
+      const auth = details?.auth !== null && typeof details?.auth === 'object' ? (details.auth as Record<string, unknown>) : undefined
+      if (auth?.nextAction === 'restart') return true
+      if (auth?.reason === 'authorization_expired') return true
+      if (auth?.code === 40014 || auth?.code === '40014') return true
+      if (error?.code === 'AUTH_FAILED' && /过期|expired/i.test(String(error.message ?? ''))) return true
+      return false
+    } catch {
+      return /authorization_expired|40014|nextAction\\?":\\?"restart/.test(raw)
+    }
+  }
+
+  /**
+   * 续等一次（CLI 侧只等 1 秒）：用来在「复用上次链接」之前确认那条待授权还活着。
+   * 返回 expired / logged_in / pending / unknown——只有 expired 才需要重开。
+   */
+  async function probePending(cliPath: string, deviceCode: string): Promise<'expired' | 'logged_in' | 'pending' | 'unknown'> {
+    const result = await deps.run(
+      [cliPath, 'login', '--wait', '--device-code', deviceCode, '--timeout', '1s', '-j'],
+      { env: {}, timeoutMs: 20_000 },
+    )
+    const raw = result.stdout.trim()
+    if (raw === '') return 'unknown'
+    if (isExpiredAuth(raw)) return 'expired'
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const data = parsed.data !== null && typeof parsed.data === 'object' ? (parsed.data as Record<string, unknown>) : undefined
+      if (data?.status === 'logged_in' || parsed.status === 'logged_in' || data?.loggedIn === true) return 'logged_in'
+      return 'pending'
+    } catch {
+      return 'unknown'
+    }
+  }
+
+  /** 发起浏览器授权：拿到链接与 nextCommand，**同会话内只发起一次**（失败退避 + 过期即重开）。 */
   async function startLogin(cliPath: string): Promise<EnsureResult> {
-    if (lastLogin !== undefined && now() - lastLogin.at < loginBackoff) return { ok: false, message: lastLogin.message }
     if (loginInFlight !== undefined) return loginInFlight
-    loginInFlight = doLogin(cliPath).finally(() => {
+    loginInFlight = runLogin(cliPath).finally(() => {
       loginInFlight = undefined
     })
     return loginInFlight
   }
 
-  async function doLogin(cliPath: string): Promise<EnsureResult> {
-    deps.log('即梦没登录，自动发起浏览器授权（需要用户点链接）', { path: path.basename(cliPath) })
-    const result = await deps.run([cliPath, 'login', '--non-interactive', '-j'], { env: {}, timeoutMs: loginTimeout })
+  async function runLogin(cliPath: string): Promise<EnsureResult> {
+    if (lastLogin !== undefined && now() - lastLogin.at < loginBackoff) {
+      // 复用前先验一次：链接可能已经被服务端判过期（40014），那就不能再复述
+      if (lastLogin.deviceCode !== undefined) {
+        const state = await probePending(cliPath, lastLogin.deviceCode)
+        if (state === 'logged_in') return { ok: true }
+        if (state === 'expired') {
+          deps.log('即梦授权已过期，改用 --restart 重新发起（不复用死链接）', { reason: 'authorization_expired' })
+          lastLogin = undefined
+          return doLogin(cliPath, true)
+        }
+      }
+      return { ok: false, message: lastLogin.message }
+    }
+    return doLogin(cliPath, false)
+  }
+
+  async function doLogin(cliPath: string, restart: boolean): Promise<EnsureResult> {
+    deps.log(
+      restart ? '即梦授权过期，重新发起浏览器授权（--restart）' : '即梦没登录，自动发起浏览器授权（需要用户点链接）',
+      { path: path.basename(cliPath) },
+    )
+    const args = [cliPath, 'login', '--non-interactive', ...(restart ? ['--restart'] : []), '-j']
+    const result = await deps.run(args, { env: {}, timeoutMs: loginTimeout })
+    // 服务端说这条待授权已经过期、且这次还没带 --restart：立刻重开一次（只重开一次，不递归）
+    if (!restart && isExpiredAuth(result.stdout)) {
+      deps.log('即梦授权被判过期，自动改用 --restart 重新发起', { reason: 'authorization_expired' })
+      return doLogin(cliPath, true)
+    }
     if (result.timedOut) {
       const message = `即梦授权发起超时（${Math.round(loginTimeout / 1000)} 秒）。手工：在终端跑「"${cliPath}" login --non-interactive」`
       lastLogin = { at: now(), message }
@@ -244,6 +317,7 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
     }
     let link = ''
     let nextCommand = ''
+    let deviceCode = ''
     try {
       const parsed = JSON.parse(result.stdout.trim()) as Record<string, unknown>
       const data = parsed.data !== null && typeof parsed.data === 'object' ? (parsed.data as Record<string, unknown>) : undefined
@@ -251,6 +325,7 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
       if (typeof challenge?.verificationUriComplete === 'string' && challenge.verificationUriComplete !== '') link = challenge.verificationUriComplete
       else if (typeof challenge?.verificationUri === 'string' && challenge.verificationUri !== '') link = challenge.verificationUri
       if (typeof data?.nextCommand === 'string' && data.nextCommand !== '') nextCommand = data.nextCommand
+      if (typeof challenge?.deviceCode === 'string' && challenge.deviceCode !== '') deviceCode = challenge.deviceCode
       if (link === '' && data?.status === 'logged_in') return { ok: true }
     } catch {
       /* 解析不出来就走下面的手工路径 */
@@ -264,7 +339,7 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
     const lines = [`即梦还没登录。**点这个链接授权**：${link}`, '授权完告诉我，我接着往下走（不用再问我别的）。']
     if (nextCommand !== '') lines.push(`授权后需要续等的命令：${nextCommand}`)
     const message = lines.join('\n')
-    lastLogin = { at: now(), message }
+    lastLogin = { at: now(), message, ...(deviceCode === '' ? {} : { deviceCode }) }
     return { ok: false, message }
   }
 
@@ -295,3 +370,97 @@ export function createJimengSelfHealer(deps: SelfHealDeps) {
 }
 
 export type JimengSelfHealer = ReturnType<typeof createJimengSelfHealer>
+/**
+ * 云雀（pippit-tool-cli）侧的安装口令。**默认不自动跑**——用户 2026-11-25 的规矩：
+ * 云雀这条默认只报错，`autoInstall:true` 才真的去装；即梦那条才是默认装的。
+ */
+export const XYQ_MANUAL_INSTALL = '在终端跑：npx @pippit-dev/cli@latest install'
+export const XYQ_INSTALL_PACKAGE = '@pippit-dev/cli@latest'
+export const XYQ_INSTALL_SUBCOMMAND = 'install'
+
+export interface XyqSelfHealDeps {
+  run: CliRunner
+  log: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
+  /** 纯定位（默认 locateXyqCli；测试注入）。 */
+  locate?: () => string | undefined
+  platform?: NodeJS.Platform
+  env?: Record<string, string | undefined>
+  installTimeoutMs?: number
+  now?: () => number
+  installBackoffMs?: number
+}
+
+export function createXyqSelfHealer(deps: XyqSelfHealDeps) {
+  const platform = deps.platform ?? process.platform
+  const now = deps.now ?? Date.now
+  const installTimeout = deps.installTimeoutMs ?? 180_000
+  const installBackoff = deps.installBackoffMs ?? 10 * 60_000
+  const locate = deps.locate ?? (() => locateXyqCli({ env: deps.env, platform } satisfies LocateXyqOptions))
+  // Windows 上 npx 是 npx.cmd：spawn 不经过 shell，直接用 'npx' 会 ENOENT。
+  const npxCommand = deps.env?.XYQ_NPX ?? (platform === 'win32' ? 'npx.cmd' : 'npx')
+
+  let inFlight: Promise<EnsureResult> | undefined
+  let lastInstall: { at: number; ok: boolean; message: string } | undefined
+
+  async function doInstall(): Promise<EnsureResult> {
+    const found = locate()
+    if (found !== undefined) return { ok: true, cliPath: found }
+    deps.log('小云雀 CLI 没装，开始自动安装（npx @pippit-dev/cli@latest install）', { platform })
+    const result = await deps.run([npxCommand, XYQ_INSTALL_PACKAGE, XYQ_INSTALL_SUBCOMMAND], {
+      env: {},
+      timeoutMs: installTimeout,
+    })
+    const detail = truncate(`${result.stdout}\n${result.stderr}`)
+    if (result.timedOut) {
+      const message = `小云雀 CLI 自动安装超时（${Math.round(installTimeout / 1000)} 秒）。手工安装：${XYQ_MANUAL_INSTALL}`
+      deps.log('小云雀 CLI 自动安装失败：超时', { reason: 'timeout' })
+      lastInstall = { at: now(), ok: false, message }
+      return { ok: false, message }
+    }
+    const after = locate()
+    if (after !== undefined) {
+      deps.log('小云雀 CLI 自动安装完成', { path: path.basename(after) })
+      lastInstall = { at: now(), ok: true, message: '' }
+      return { ok: true, cliPath: after }
+    }
+    const reason = result.code === 0 ? '安装命令跑完了，但没找到 pippit-tool-cli（可能在别的目录）' : detail === '' ? `退出码 ${result.code}` : detail
+    const message = `小云雀 CLI 自动安装失败：${reason}。手工安装：${XYQ_MANUAL_INSTALL}`
+    deps.log('小云雀 CLI 自动安装失败（云雀工具仍可用但会报错）', { reason: truncate(reason, 200) })
+    lastInstall = { at: now(), ok: false, message }
+    return { ok: false, message }
+  }
+
+  return {
+    /**
+     * 第一步：CLI 在不在。**默认（autoInstall 不为 true）只报错**，不动手。
+     * 失败退避 10 分钟，避免一次会话里反复跑 npx。
+     */
+    async ensureCli(autoInstall: boolean): Promise<EnsureResult> {
+      const found = locate()
+      if (found !== undefined) return { ok: true, cliPath: found }
+      if (autoInstall !== true) {
+        return {
+          ok: false,
+          message: `没找到 pippit-tool-cli（小云雀 CLI）。默认不会自动安装：本次调用没有传 autoInstall:true。手工安装：${XYQ_MANUAL_INSTALL}`,
+        }
+      }
+      if (lastInstall !== undefined && !lastInstall.ok && now() - lastInstall.at < installBackoff) {
+        return {
+          ok: false,
+          message: `${lastInstall.message}（${Math.ceil((installBackoff - (now() - lastInstall.at)) / 60_000)} 分钟内不再重试，避免反复下载）`,
+        }
+      }
+      if (inFlight !== undefined) return inFlight
+      inFlight = doInstall().finally(() => {
+        inFlight = undefined
+      })
+      return inFlight
+    },
+    reset(): void {
+      inFlight = undefined
+      lastInstall = undefined
+    },
+  }
+}
+
+export type XyqSelfHealer = ReturnType<typeof createXyqSelfHealer>

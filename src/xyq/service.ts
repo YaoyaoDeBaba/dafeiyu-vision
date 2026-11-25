@@ -8,6 +8,8 @@
  * 工具层直接把它回给模型/用户，不吞错误。
  */
 import type { CliRunner, CliRunResult } from './cli.js'
+import { locateXyqCli } from './cli.js'
+import { createXyqSelfHealer, type XyqSelfHealer } from './selfheal.js'
 import { readXyqConfig, viewXyqConfig, writeXyqConfig, type XyqConfig } from './config.js'
 import {
   XYQ_CHANNEL_LABELS,
@@ -29,6 +31,13 @@ export interface XyqServiceDeps {
    * 缺省 = 只有云雀，老行为逐字不变；传了也不会影响默认调用（channel 默认 'xyq'）。
    */
   channels?: Partial<Record<ChannelId, GenerationChannel>>
+  /**
+   * **纯定位** pippit-tool-cli（不装）。自愈的第一步用它；不传就现场 locateXyqCli()。
+   * 见 ./cli.ts 的 locateXyqCli：env → 官方 skill 缓存 → PATH。
+   */
+  locateCli?: () => string | undefined
+  /** 测试注入：换掉云雀侧自愈器。 */
+  xyqHealer?: XyqSelfHealer
   log: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
   sleep?: (ms: number) => Promise<void>
   pollIntervalMs?: number
@@ -71,7 +80,7 @@ function parseJson(text: string): unknown {
 /** CLI 的鉴权失败 → 一句用户能照做的中文。 */
 function authMessage(text: string): string | undefined {
   if (/登录凭证|XYQ_ACCESS_KEY|未授权|unauthorized|401|403/i.test(text)) {
-    return '小云雀 Access Key 已过期或无效。请到小云雀官网 → ⚡CLI/API → API → 管理 Access Key 更新后，在「大肥鱼 → 小云雀」里重新填写。'
+    return '小云雀 Access Key 已过期或无效。请到小云雀官网 → ⚡CLI/API → API → 管理 Access Key 更新后，在「大肥鱼 → 鲸鱼做梦」里重新填写。'
   }
   return undefined
 }
@@ -100,11 +109,11 @@ export function createXyqService(deps: XyqServiceDeps) {
 
   async function call(args: string[], timeoutMs: number): Promise<{ result: CliRunResult; json?: Json; message?: string }> {
     const config = readConfig()
-    if (!config.enabled) return { result: { code: -1, stdout: '', stderr: '', timedOut: false }, message: '小云雀能力已关闭（设置页 → 大肥鱼 → 小云雀）' }
+    if (!config.enabled) return { result: { code: -1, stdout: '', stderr: '', timedOut: false }, message: '小云雀能力已关闭（设置页 → 大肥鱼 → 鲸鱼做梦）' }
     if (config.accessKey === '') {
       return {
         result: { code: -1, stdout: '', stderr: '', timedOut: false },
-        message: '还没填小云雀 Access Key。请到小云雀官网 → ⚡CLI/API → API → 管理 Access Key 新建，然后填到「大肥鱼 → 小云雀」里。',
+        message: '还没填小云雀 Access Key。请到小云雀官网 → ⚡CLI/API → API → 管理 Access Key 新建，然后填到「大肥鱼 → 鲸鱼做梦」里。',
       }
     }
     const cli = await deps.resolveCli()
@@ -185,6 +194,15 @@ export function createXyqService(deps: XyqServiceDeps) {
     return { channel }
   }
 
+  // 云雀侧自愈器：装 CLI 只在这里发生，且**默认不装**（显式 autoInstall:true 才动）。
+  const healer =
+    deps.xyqHealer ??
+    createXyqSelfHealer({
+      run: deps.run,
+      log: deps.log,
+      locate: deps.locateCli ?? ((): string | undefined => locateXyqCli()),
+    })
+
   /**
    * 云雀侧的「调用前自愈」三步（顺序固定）：CLI 在不在 → 授权/凭据在不在 → 凭据有没有效。
    * 云雀用的是 Access Key（不是浏览器授权），所以第 2、3 步都落在 key 上；自动安装交给
@@ -193,22 +211,22 @@ export function createXyqService(deps: XyqServiceDeps) {
   async function preflightXyq(options: ChannelPreflightOptions): Promise<ChannelPreflight> {
     const config = readConfig()
     if (!config.enabled) {
-      return { ok: false, message: '小云雀能力已关闭（设置页 → 大肥鱼 → 小云雀）。要用就先把开关打开。' }
+      return { ok: false, message: '小云雀能力已关闭（设置页 → 大肥鱼 → 鲸鱼做梦）。要用就先把开关打开。' }
     }
-    const cli = await deps.resolveCli()
-    if (cli === undefined) {
-      deps.log('小云雀 CLI 没找到，自动安装也没成功（远控/识图不受影响）', { autoInstall: options.autoInstall ?? true })
-      return {
-        ok: false,
-        message: '没找到 pippit-tool-cli，自动安装也失败了。手工安装：在终端跑「npx @pippit-dev/cli@latest install」，装完再试一次。',
-      }
+    // 第一步：CLI 在不在。**默认只报错**——只有显式 autoInstall:true 才跑 npx 装。
+    // 定位用纯查询（locateCli），不是会顺手装一遍的 resolveCli：装不装必须由调用方决定。
+    const locateCli = deps.locateCli ?? ((): string | undefined => locateXyqCli())
+    const present = deps.locateCli !== undefined ? locateCli() : await deps.resolveCli()
+    if (present === undefined) {
+      const ensured = await healer.ensureCli(options.autoInstall === true)
+      if (!ensured.ok) return { ok: false, message: ensured.message ?? '没找到 pippit-tool-cli' }
     }
     if (config.accessKey === '') {
       return {
         ok: false,
         message: [
           '小云雀还没填 Access Key。任选一处填（三处等价）：',
-          '① 设置页 →「大肥鱼 → 小云雀」→ Access Key 一栏；',
+          '① 设置页 →「大肥鱼 → 鲸鱼做梦」→ Access Key 一栏；',
           `② 或直接改配置文件 ${deps.configFile} 的 accessKey 字段（改完重启宿主）；`,
           '③ 或设环境变量 XYQ_ACCESS_KEY（插件就是把它作为环境变量交给 CLI 的）。',
           'Key 在小云雀官网 → ⚡CLI/API → API → 管理 Access Key 里建。',
@@ -224,7 +242,7 @@ export function createXyqService(deps: XyqServiceDeps) {
         ok: false,
         message: [
           '小云雀 Access Key 没生效（过期或无效）。',
-          '去小云雀官网 → ⚡CLI/API → API → 管理 Access Key 更新，然后填到设置页「大肥鱼 → 小云雀」，',
+          '去小云雀官网 → ⚡CLI/API → API → 管理 Access Key 更新，然后填到设置页「大肥鱼 → 鲸鱼做梦」，',
           `或改配置文件 ${deps.configFile} 的 accessKey，或设环境变量 XYQ_ACCESS_KEY。`,
         ].join(''),
         needsUser: true,
@@ -425,11 +443,11 @@ export function createXyqService(deps: XyqServiceDeps) {
       const sessionKey = input.sessionKey ?? 'default'
       const budget = budgetOf(sessionKey)
       if (config.budget.images > 0 && budget.images >= config.budget.images) {
-        return { ok: false, message: `本会话的生图额度已用完（上限 ${config.budget.images} 张，可在「大肥鱼 → 小云雀」里调整）` }
+        return { ok: false, message: `本会话的生图额度已用完（上限 ${config.budget.images} 张，可在「大肥鱼 → 鲸鱼做梦」里调整）` }
       }
       const model = (input.model ?? config.defaultImageModel).trim()
       if (model === '') {
-        return { ok: false, message: '没指定图片模型。先用 `model list --type image` 查可用模型，或在「大肥鱼 → 小云雀」里设默认图片模型。' }
+        return { ok: false, message: '没指定图片模型。先用 `model list --type image` 查可用模型，或在「大肥鱼 → 鲸鱼做梦」里设默认图片模型。' }
       }
       const args = ['generate-image', '--prompt', input.prompt, '--model', model]
       for (const image of input.images ?? []) {
@@ -593,7 +611,7 @@ export function createXyqService(deps: XyqServiceDeps) {
       const sessionKey = input.sessionKey ?? 'default'
       const budget = budgetOf(sessionKey)
       if (config.budget.videos > 0 && budget.videos >= config.budget.videos) {
-        return { ok: false, message: `本会话的视频额度已用完（上限 ${config.budget.videos} 条，可在「大肥鱼 → 小云雀」里调整）` }
+        return { ok: false, message: `本会话的视频额度已用完（上限 ${config.budget.videos} 条，可在「大肥鱼 → 鲸鱼做梦」里调整）` }
       }
       const model = (input.model ?? config.defaultVideoModel).trim()
       if (model === '') return { ok: false, message: '没指定视频模型（默认 Seedance_2.0_mini_lite，可在设置里改）' }

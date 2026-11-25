@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createXyqService } from '../src/xyq/service.js'
@@ -220,7 +220,7 @@ test('⑤ 云雀缺 Access Key ⇒ 说清三处填哪儿（设置页 / 配置文
     assert.equal(result.ok, false)
     const message = String(result.message)
     assert.match(message, /Access Key/)
-    assert.match(message, /大肥鱼 → 小云雀/, '要指名设置页哪一栏')
+    assert.match(message, /大肥鱼 → 鲸鱼做梦/, '要指名设置页哪一栏（产品已改名）')
     assert.ok(message.includes(h.configFile), '要给配置文件的绝对路径')
     assert.match(message, /XYQ_ACCESS_KEY/, '要给环境变量名')
   } finally {
@@ -295,4 +295,192 @@ test('自动安装只在被调用时触发：startXyq 启动期间一次都不�
 test('extractWindowsInstaller：从 sh 里抠出 base64 安装器（抠不到返回 undefined）', () => {
   assert.equal(extractWindowsInstaller(NOVEL_SH), EMBEDDED_PS1)
   assert.equal(extractWindowsInstaller('#!/usr/bin/env bash\necho hi\n'), undefined)
+})
+
+// ---------------------------------------------------------------------------
+// 云雀（pippit-tool-cli）侧的自愈：默认只报错，显式 autoInstall:true 才跑 npx
+// ---------------------------------------------------------------------------
+
+function xyqHarness(init: { present?: boolean; installOk?: boolean; accessKey?: string } = {}) {
+  let present = init.present ?? false
+  const calls: string[][] = []
+  const logs: string[] = []
+  const run: CliRunner = async (args) => {
+    calls.push(args)
+    const exe = args[0] ?? ''
+    if (exe.startsWith('npx')) {
+      if (init.installOk === false) return { code: 1, stdout: 'npm ERR! network', stderr: '', timedOut: false }
+      present = true
+      return { code: 0, stdout: 'installed', stderr: '', timedOut: false }
+    }
+    if (args[1] === 'generate-image') return { code: 0, stdout: JSON.stringify({ thread_id: 't', run_id: 'r' }), stderr: '', timedOut: false }
+    if (args[1] === 'query-result') {
+      return { code: 0, stdout: JSON.stringify({ status: 'succeeded', images: [{ output_path: 'D:/out/a.png' }] }), stderr: '', timedOut: false }
+    }
+    return { code: 0, stdout: '', stderr: '', timedOut: false }
+  }
+  const dir = mkdtempSync(path.join(tmpdir(), 'drc-xyqheal-'))
+  const configFile = path.join(dir, 'xyq.json')
+  writeFileSync(configFile, JSON.stringify({ accessKey: init.accessKey ?? 'ak-test' }), 'utf8')
+  const service = createXyqService({
+    configFile,
+    run,
+    resolveCli: async () => (present ? 'cli' : undefined),
+    locateCli: () => (present ? 'cli' : undefined),
+    log: (message) => logs.push(String(message)),
+    sleep: async () => undefined,
+    pollIntervalMs: 0,
+  })
+  return { service, calls, logs, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('云雀①：缺 CLI 默认只报错、一次也不跑 npx', async () => {
+  const h = xyqHarness({ present: false })
+  try {
+    const result = await h.service.generateImage({ prompt: '画一只鲸鱼' })
+    assert.equal(result.ok, false)
+    assert.match(String(result.message), /没找到 pippit-tool-cli/)
+    assert.match(String(result.message), /autoInstall:true/, '要告诉用户怎样才能装')
+    assert.match(String(result.message), /npx @pippit-dev\/cli@latest install/, '要给手工命令')
+    assert.equal(h.calls.filter((args) => (args[0] ?? '').startsWith('npx')).length, 0, '默认绝不自动装')
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('云雀①：传 autoInstall:true 才跑 npx（断言命令行），装完继续原调用', async () => {
+  const h = xyqHarness({ present: false })
+  try {
+    const result = await h.service.generateImage({ prompt: '画一只鲸鱼', model: 'Seedream_5.0', autoInstall: true })
+    const npxCall = h.calls.find((args) => (args[0] ?? '').startsWith('npx'))!
+    assert.ok(/^npx(\.cmd)?$/.test(npxCall[0] ?? ''), 'Windows 上必须是 npx.cmd，否则 spawn 直接 ENOENT')
+    assert.equal(npxCall[1], '@pippit-dev/cli@latest')
+    assert.equal(npxCall[2], 'install')
+    assert.equal(result.ok, true, '装完要接着把这次生图做完')
+    assert.deepEqual(result.files, ['D:/out/a.png'])
+    assert.ok(h.logs.some((line) => line.includes('开始自动安装')), '自动动作要留一行中文日志')
+    assert.ok(h.logs.some((line) => line.includes('自动安装完成')))
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('云雀①：安装失败 ⇒ 中文错误含手工命令，退避期内不再跑 npx', async () => {
+  const h = xyqHarness({ present: false, installOk: false })
+  try {
+    const first = await h.service.generateImage({ prompt: '画一只鲸鱼', autoInstall: true })
+    assert.equal(first.ok, false)
+    assert.match(String(first.message), /自动安装失败/)
+    assert.match(String(first.message), /npx @pippit-dev\/cli@latest install/)
+    assert.match(String(first.message), /npm ERR! network/, '失败原因要带出来（截断）')
+    const attempts = h.calls.filter((args) => (args[0] ?? '').startsWith('npx')).length
+    assert.equal(attempts, 1)
+
+    const second = await h.service.generateImage({ prompt: '再画一只', autoInstall: true })
+    assert.equal(second.ok, false)
+    assert.equal(h.calls.filter((args) => (args[0] ?? '').startsWith('npx')).length, attempts, '退避期内不再下载')
+    assert.match(String(second.message), /不再重试/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 真 bug：授权码过期后自愈一直复述死链接（真机 40014 / nextAction=restart）
+// ---------------------------------------------------------------------------
+
+test('即梦：授权过期 ⇒ 第二次调用带 --restart 并给新链接（不复述死链接）', async () => {
+  const loginCalls: string[][] = []
+  const links = ['https://jimeng.test/auth?code=OLD', 'https://jimeng.test/auth?code=NEW']
+  const expireEnvelope = {
+    code: 0,
+    stdout: JSON.stringify({
+      status: 'error',
+      error: {
+        code: 'AUTH_FAILED',
+        message: '等待网页授权：网页授权已过期',
+        details: { auth: { code: 40014, reason: 'authorization_expired', nextAction: 'restart' } },
+      },
+    }),
+    stderr: '',
+    timedOut: false,
+  }
+  let loginIndex = 0
+  const run: CliRunner = async (args) => {
+    const command = args.join(' ')
+    if (command.includes('credit get')) return reply(AUTH_FAILED)
+    if (command.includes('--wait')) {
+      loginCalls.push(args)
+      return reply(expireEnvelope)
+    }
+    if (command.includes(' login ')) {
+      loginCalls.push(args)
+      const link = links[loginIndex] ?? links[0]!
+      const code = loginIndex === 0 ? 'dc-1' : 'dc-2'
+      loginIndex += 1
+      return reply({
+        stdout: JSON.stringify({
+          status: 'ok',
+          data: {
+            status: 'authorization_required',
+            challenge: { deviceCode: code, verificationUri: link },
+            nextCommand: `"${NOVEL}" login --wait --device-code ${code}`,
+          },
+        }),
+      })
+    }
+    return reply({})
+  }
+  const jimeng = createJimengService({
+    run,
+    locate: () => ({ novel: NOVEL }),
+    outDir: OUT_DIR,
+    log: () => undefined,
+    platform: 'win32',
+  })
+  const first = await jimeng.preflight!({})
+  assert.equal(first.ok, false)
+  assert.match(String(first.message), /code=OLD/)
+
+  const second = await jimeng.preflight!({})
+  assert.equal(second.ok, false)
+  assert.match(String(second.message), /code=NEW/, '必须给新链接')
+  assert.equal(/code=OLD/.test(String(second.message)), false, '不能再复述死链接')
+  const restartCall = loginCalls.find((args) => args.includes('--restart'))
+  assert.ok(restartCall, '过期后必须用 --restart 重新发起')
+  assert.equal(restartCall?.includes('--non-interactive'), true)
+})
+
+// ---------------------------------------------------------------------------
+// 产品改名：大肥鱼-鲸鱼做梦 —— 只改人看到的名字，契约不许动
+// ---------------------------------------------------------------------------
+
+test('展示名：guidance / SKILL 是「大肥鱼-鲸鱼做梦」，两条通道名都在', async () => {
+  const { xyqGuidance } = await import('../src/xyq/guidance.js')
+  const guidance = xyqGuidance('explicit')
+  assert.match(guidance, /大肥鱼-鲸鱼做梦/)
+  assert.match(guidance, /小云雀（xyq）/)
+  assert.match(guidance, /即梦（jimeng）/)
+  assert.equal(/大肥鱼-小云雀/.test(guidance), false, '旧名不许残留')
+  assert.match(guidance, /npx @pippit-dev\/cli@latest install/, '云雀安装口令要在文案里')
+  assert.match(guidance, /install\.ps1/, '即梦安装口令要在文案里')
+
+  const skill = readFileSync(path.join('assets', 'skills', 'dafeiyu-xyq', 'SKILL.md'), 'utf8')
+  assert.match(skill, /^# 大肥鱼-鲸鱼做梦/m)
+  assert.match(skill, /npx @pippit-dev\/cli@latest install/)
+  assert.match(skill, /login --non-interactive/)
+})
+
+test('展示名：包名 / 工具名 / 通道 id / 存储路径 一律没变（只改人看到的名字）', async () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as Record<string, unknown>
+  assert.equal(pkg.name, 'dsh-vision-dafeiyu', '包名是契约，不许动')
+  const { XYQ_CHANNEL_IDS } = await import('../src/xyq/channel.js')
+  assert.deepEqual([...XYQ_CHANNEL_IDS], ['xyq', 'jimeng'], '通道 id 是契约')
+  const { xyqTools } = await import('../src/xyq/tools.js')
+  const names = (xyqTools({} as never) as Array<Record<string, unknown>>).map((tool) => tool.name)
+  for (const expected of ['generate_image', 'generate_video', 'xyq_balance', 'xyq_models', 'xyq_guide']) {
+    assert.ok(names.includes(expected), `工具名 ${expected} 必须还在（${names.join(',')}）`)
+  }
+  const { resolveXyqConfigFile } = await import('../src/xyq/config.js')
+  assert.match(resolveXyqConfigFile('/tmp/dsh-home'), /storages[\\/]dsh-remote-dafeiyu[\\/]xyq\.json$/, '存储路径不许动')
 })

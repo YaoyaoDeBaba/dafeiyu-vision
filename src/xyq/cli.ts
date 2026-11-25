@@ -32,8 +32,50 @@ function platformDir(): string {
   return `linux-${arch}`
 }
 
+function binaryNameFor(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'pippit-tool-cli.exe' : 'pippit-tool-cli'
+}
+
 function binaryName(): string {
-  return process.platform === 'win32' ? 'pippit-tool-cli.exe' : 'pippit-tool-cli'
+  return binaryNameFor(process.platform)
+}
+
+export interface LocateXyqOptions {
+  env?: Record<string, string | undefined>
+  home?: string
+  platform?: NodeJS.Platform
+  exists?: (file: string) => boolean
+}
+
+/**
+ * **纯定位**：只回答「pippit-tool-cli 在哪」，装不装是别人的事（与 resolveCliPath 的区别就在这）。
+ * 顺序：环境变量 XYQ_CLI_PATH → 官方 skill 缓存位置 → PATH。
+ * 为什么要它：2026-11-25 起「自动安装」必须显式开关，默认只报错——
+ * 所以自愈的第一步不能复用会顺手装一遍的 resolveCliPath。
+ */
+export function locateXyqCli(options: LocateXyqOptions = {}): string | undefined {
+  const env = options.env ?? process.env
+  const home = options.home ?? os.homedir()
+  const platform = options.platform ?? process.platform
+  const exists =
+    options.exists ??
+    ((file: string): boolean => {
+      try {
+        return fs.statSync(file).isFile()
+      } catch {
+        return false
+      }
+    })
+  const candidates: Array<string | undefined> = [env.XYQ_CLI_PATH, ...cachedCliCandidates(home)]
+  const name = binaryNameFor(platform)
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    if (dir.trim() === '') continue
+    candidates.push(path.join(dir, name))
+  }
+  for (const candidate of candidates) {
+    if (candidate !== undefined && candidate !== '' && exists(candidate)) return candidate
+  }
+  return undefined
 }
 
 /** 已知的 CLI 位置（不做存在性检查之外的任何事）。 */
@@ -95,6 +137,22 @@ function cliPathForRun(args: string[]): string {
   return args[0] ?? ''
 }
 
+/**
+ * 云雀 CLI 安装的默认超时：**180 秒**。
+ * 比即梦那条（`selfheal.ts` 的 installTimeoutMs，默认 120 秒）更长，原因不同：
+ *   - 云雀走 `npx @pippit-dev/cli@latest install`，首次要拉 npm 包 + 通用 Skill + 短剧 Skill，
+ *     受 npm registry 网络波动影响，120 秒经常不够；
+ *   - 即梦走官方 CDN 的 PowerShell 安装器（单个二进制 + skill 包），体积固定、120 秒够，
+ *     超时给太长只会让用户多等。
+ * 两处都是「超时就放弃 + 输出截断 + 失败给手工命令」，不许无限挂着。
+ */
+export const XYQ_INSTALL_TIMEOUT_MS = 180_000
+
+/** stdout 可能很长（npm 安装日志）：只留尾部 64KB 再解析，避免把整个日志塞进内存/日志。 */
+export function truncateTail(text: string, limit = 64 * 1024): string {
+  return text.length <= limit ? text : text.slice(text.length - limit)
+}
+
 /** 跑 ensure-cli，从最后一行 JSON 里取 cli_path。 */
 export async function installCli(
   run: CliRunner,
@@ -103,8 +161,9 @@ export async function installCli(
   const home = options.home ?? os.homedir()
   const script = ensureCliScript(home)
   if (!fs.existsSync(script)) return undefined
-  const result = await run([process.execPath, script], { env: {}, timeoutMs: options.timeoutMs ?? 300_000 })
-  const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim() !== '')
+  const result = await run([process.execPath, script], { env: {}, timeoutMs: options.timeoutMs ?? XYQ_INSTALL_TIMEOUT_MS })
+  if (result.timedOut) return undefined
+  const lines = truncateTail(result.stdout).split(/\r?\n/).filter((line) => line.trim() !== '')
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     try {
       const parsed = JSON.parse(lines[i]!) as { cli_path?: unknown }

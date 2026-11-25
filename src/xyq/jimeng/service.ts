@@ -298,11 +298,20 @@ export function createJimengService(deps: JimengServiceDeps): GenerationChannel 
       const answered = await call([ready.cli, 'model', 'list', '--type', kind, '-j'], 90_000)
       if (answered.message !== undefined) return { ok: false, message: answered.message }
       const data = answered.envelope?.data
-      const items = Array.isArray((data as Record<string, unknown> | undefined)?.items)
-        ? ((data as Record<string, unknown>).items as Array<Record<string, unknown>>)
-        : Array.isArray(data)
-          ? (data as Array<Record<string, unknown>>)
-          : []
+      /*
+       * 实测（2026-11-25 真机）：`model list --type image -j` 的信封是
+       * `{"data":{"models":[{"key":"seedream_5.5","name":"Seedream 5.5",…}],"scenes":[…]},"status":"success"}`，
+       * 字段名是 **models**（不是 items）。三种形状都兜着，别再赌一个键。
+       */
+      const record = data !== null && typeof data === 'object' ? (data as Record<string, unknown>) : undefined
+      const list = Array.isArray(record?.models)
+        ? (record?.models as Array<Record<string, unknown>>)
+        : Array.isArray(record?.items)
+          ? (record?.items as Array<Record<string, unknown>>)
+          : Array.isArray(data)
+            ? (data as Array<Record<string, unknown>>)
+            : []
+      const items = list
       const models: Array<{ key: string; name: string }> = []
       for (const item of items) {
         const key = typeof item.key === 'string' && item.key !== '' ? item.key : typeof item.name === 'string' ? item.name : ''
