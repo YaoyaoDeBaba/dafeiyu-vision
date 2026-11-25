@@ -561,3 +561,30 @@ test('xyq_estimate：小云雀通道没有报价接口 ⇒ 中文说清，不瞎
     h.cleanup()
   }
 })
+test('jimeng.estimate：argv 拼对（credit estimate + --duration），解析 estimatedCredits', async () => {
+  const calls: string[][] = []
+  const channel = createJimengService({
+    run: async (args) => {
+      calls.push(args)
+      return {
+        code: 0,
+        stdout: JSON.stringify({ status: 'ok', data: { estimatedCredits: 76, billedAmount: 4, billedUnit: 'second', modelId: 'Seedance_2.5_flash' } }),
+        stderr: '',
+        timedOut: false,
+      }
+    },
+    locate: () => ({ novel: 'C:/x/jimeng-novel.exe' }),
+    outDir: 'C:/tmp',
+  })
+
+  const image = await channel.estimate!({ type: 'image', model: 'seedream_5.5' })
+  assert.equal(image.ok, true)
+  assert.equal(image.credits, 76)
+  assert.deepEqual(calls[0]?.slice(1, 3), ['credit', 'estimate'], '走的是 credit estimate')
+  assert.ok(calls[0]?.includes('-j'), '要 json 信封')
+
+  const video = await channel.estimate!({ type: 'video', model: 'Seedance_2.5_flash', duration: 4 })
+  assert.equal(video.billedUnit, 'second')
+  assert.ok(calls[1]?.includes('--duration') && calls[1]?.includes('4'), '视频报价必须带 --duration')
+  assert.ok(calls[2] === undefined, '不该有第三次调用')
+})

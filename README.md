@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 121 条判据
+npm test            # 构建 + 122 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
