@@ -19,6 +19,8 @@ import type {
   ChannelBalanceResult,
   ChannelGenerateResult,
   ChannelImageInput,
+  ChannelEstimateInput,
+  ChannelEstimateResult,
   ChannelModelsResult,
   ChannelPreflight,
   ChannelPreflightOptions,
@@ -292,6 +294,41 @@ export function createJimengService(deps: JimengServiceDeps): GenerationChannel 
       return { ok: true, totalRemain: String(value) }
     },
 
+/**
+     * 事前报价（0.10.0）：`jimeng-novel credit estimate --type image|video --model <key> [--duration N] -j`。
+     * 真机回包：`{data:{estimatedCredits:4, billedAmount:1, billedUnit:"image", modelId, priceStatus}}`。
+     * 视频按时长计价（实测 `Seedance_2.5_flash` 4 秒 = 76 积分），所以视频**强烈建议**先报一次。
+     */
+    async estimate(input: ChannelEstimateInput): Promise<ChannelEstimateResult> {
+      const ready = await ensureAvailable()
+      if ('message' in ready) return { ok: false, message: ready.message }
+      if (input.model.trim() === '') {
+        return { ok: false, message: '报价需要 model（先用 xyq_models 查该通道的模型 key）' }
+      }
+      const args = [ready.cli, 'credit', 'estimate', '--type', input.type, '--model', input.model]
+      if (input.type === 'video' && typeof input.duration === 'number' && input.duration > 0) {
+        args.push('--duration', String(Math.round(input.duration)))
+      }
+      const answered = await call([...args, '-j'], 60_000)
+      if (answered.message !== undefined) return { ok: false, message: answered.message }
+      const data = answered.envelope?.data
+      const credits = pickNumber(data, ['estimatedCredits', 'credits', 'totalCredits'])
+      if (credits === undefined) {
+        return { ok: false, message: `报价回包里没有积分字段：${JSON.stringify(data ?? {}).slice(0, 200)}` }
+      }
+      const record = data !== null && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+      const billedAmount = typeof record.billedAmount === 'number' ? record.billedAmount : undefined
+      const billedUnit = typeof record.billedUnit === 'string' ? record.billedUnit : undefined
+      const modelId = typeof record.modelId === 'string' ? record.modelId : input.model
+      return {
+        ok: true,
+        credits,
+        unit: 'credits',
+        ...(billedAmount === undefined ? {} : { billedAmount }),
+        ...(billedUnit === undefined ? {} : { billedUnit }),
+        modelId,
+      }
+    },
     async models(kind: 'video' | 'image'): Promise<ChannelModelsResult> {
       const ready = await ensureAvailable()
       if ('message' in ready) return { ok: false, message: ready.message }

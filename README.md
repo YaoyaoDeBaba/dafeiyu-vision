@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 117 条判据
+npm test            # 构建 + 121 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -608,3 +608,24 @@ GET /api/dsh-remote-dafeiyu/xyq/canvas?what=status|canvases|current|nodes[&canva
 - 面板里那颗「刷新」重拉 status + canvases + 当前画布的 nodes；换画布会按 `canvasId` 重查节点。
 
 实测（挂真 CLI）：`status` 带 `loggedIn/expiresAt/version`；`canvases` 回 1 个（`鲸鱼做梦自检-20261125`）；`nodes` 回该画布 1 个节点（标题/类型/状态/nodeId）。
+
+## 十五、事前报价 `xyq_estimate`（0.10.0）
+
+```
+xyq_estimate({ type: 'image'|'video', model: '<key>', duration?, channel?, canvasId?, nodeIds? })
+→ 预计消耗：4 积分（按 1 image 计）｜通道 jimeng（即梦）｜模型 seedream_5.5
+```
+
+- 即梦短剧：包 `jimeng-novel credit estimate --type … --model … [--duration N]`，取 `data.estimatedCredits` /
+  `billedAmount` / `billedUnit` / `modelId`；
+- 画布：传 `nodeIds`（+`canvasId`）则复用 `node quote`（见 12 节）；
+- 小云雀：**没有事前报价接口**，如实回「只有余额与预算上限」；
+- 真机价（2026-11-25）：图片 `seedream_5.5` **4 积分/张**；视频 `Seedance_2.5_flash` **4 秒 76 积分**。
+  视频贵一个量级，生成前先报价是硬要求（预算 60 的 agent 撞上 76 就是越界）。
+
+### 15.1 视频模型 key（有效清单）
+
+`Seedance_2.5_flash` / `Seedance_2.5_draft` / `Seedance_2.5` / `seedance2.0_fast_vision` / `seedance2.0_vision` /
+`Seedance_2.0_mini` / `wan3.0` / `happyhorse-1.1`
+
+**`seedance_2.0`（下划线+2.0）是无效 key**，会返回 `unknown or disabled model "seedance_2.0"; use model list`。

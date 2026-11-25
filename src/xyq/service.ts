@@ -290,6 +290,40 @@ export function createXyqService(deps: XyqServiceDeps) {
       }
     },
 
+    /**
+     * 事前报价（0.10.0）：只问价、不生成、不扣费。
+     * 小云雀通道没有报价接口（如实说），即梦通道包 `credit estimate`。
+     */
+    async estimate(input: {
+      channel: ChannelId
+      type: 'image' | 'video'
+      model: string
+      duration?: number
+    }): Promise<{ ok: boolean; credits?: number; billedAmount?: number; billedUnit?: string; modelId?: string; message?: string }> {
+      if (input.channel === 'xyq') {
+        return { ok: false, message: '小云雀通道没有事前报价接口（只回余额与预算上限）。要事前报价请用 channel="jimeng"。' }
+      }
+      const channel = deps.channels?.[input.channel]
+      if (channel === undefined) {
+        return { ok: false, message: `没有接入「${XYQ_CHANNEL_LABELS[input.channel] ?? input.channel}」通道` }
+      }
+      if (typeof channel.estimate !== 'function') {
+        return { ok: false, message: `「${XYQ_CHANNEL_LABELS[input.channel] ?? input.channel}」通道这个版本不支持事前报价` }
+      }
+      const result = await channel.estimate({
+        type: input.type,
+        model: input.model,
+        ...(input.duration === undefined ? {} : { duration: input.duration }),
+      })
+      return {
+        ok: result.ok,
+        ...(result.credits === undefined ? {} : { credits: result.credits }),
+        ...(result.billedAmount === undefined ? {} : { billedAmount: result.billedAmount }),
+        ...(result.billedUnit === undefined ? {} : { billedUnit: result.billedUnit }),
+        ...(result.modelId === undefined ? {} : { modelId: result.modelId }),
+        ...(result.message === undefined ? {} : { message: result.message }),
+      }
+    },
     async balance(
       channel: ChannelId = 'xyq',
       options: ChannelPreflightOptions = {},

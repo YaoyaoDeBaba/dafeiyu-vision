@@ -90,6 +90,23 @@ export type ChannelPreflight =
   | { ok: true; notes?: string[] }
   | { ok: false; message: string; needsUser?: boolean }
 
+/** 事前报价的输入/输出（0.10.0）。 */
+export interface ChannelEstimateInput {
+  type: 'image' | 'video'
+  model: string
+  duration?: number
+}
+
+export interface ChannelEstimateResult {
+  ok: boolean
+  credits?: number
+  unit?: string
+  billedAmount?: number
+  billedUnit?: string
+  modelId?: string
+  message?: string
+}
+
 export interface GenerationChannel {
   readonly id: ChannelId
   readonly label: string
@@ -104,6 +121,8 @@ export interface GenerationChannel {
   generateVideo(input: ChannelVideoInput): Promise<ChannelGenerateResult>
   balance(): Promise<ChannelBalanceResult>
   models(kind: 'video' | 'image'): Promise<ChannelModelsResult>
+  /** 事前报价（可选）：有就说明这条通道能「先看要花多少积分再决定跑不跑」。 */
+  estimate?(input: ChannelEstimateInput): Promise<ChannelEstimateResult>
 }
 
 export function isChannelId(value: unknown): value is ChannelId {

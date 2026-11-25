@@ -210,7 +210,7 @@ export function startXyq(
       const tools = ctx.get?.('tools', true) as { register?: (definition: Record<string, unknown>) => unknown } | undefined
       if (tools && typeof tools.register === 'function') {
         // `xyq_guide` 读的就是 skill 那份 SKILL.md —— 单一真源（同识图的做法）。
-        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool)
+        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot), canvas: canvasService }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool)
         probe.tools = 'registered'
       } else {
         probe.tools = 'no-tools'

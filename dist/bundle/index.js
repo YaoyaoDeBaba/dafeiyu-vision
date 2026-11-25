@@ -3126,6 +3126,35 @@ ${result.stderr}`;
         ...json3.logged_in === true ? {} : { message: "Access Key \u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u662F\u5426\u8FC7\u671F" }
       };
     },
+    /**
+     * 事前报价（0.10.0）：只问价、不生成、不扣费。
+     * 小云雀通道没有报价接口（如实说），即梦通道包 `credit estimate`。
+     */
+    async estimate(input) {
+      if (input.channel === "xyq") {
+        return { ok: false, message: '\u5C0F\u4E91\u96C0\u901A\u9053\u6CA1\u6709\u4E8B\u524D\u62A5\u4EF7\u63A5\u53E3\uFF08\u53EA\u56DE\u4F59\u989D\u4E0E\u9884\u7B97\u4E0A\u9650\uFF09\u3002\u8981\u4E8B\u524D\u62A5\u4EF7\u8BF7\u7528 channel="jimeng"\u3002' };
+      }
+      const channel = deps.channels?.[input.channel];
+      if (channel === void 0) {
+        return { ok: false, message: `\u6CA1\u6709\u63A5\u5165\u300C${XYQ_CHANNEL_LABELS[input.channel] ?? input.channel}\u300D\u901A\u9053` };
+      }
+      if (typeof channel.estimate !== "function") {
+        return { ok: false, message: `\u300C${XYQ_CHANNEL_LABELS[input.channel] ?? input.channel}\u300D\u901A\u9053\u8FD9\u4E2A\u7248\u672C\u4E0D\u652F\u6301\u4E8B\u524D\u62A5\u4EF7` };
+      }
+      const result = await channel.estimate({
+        type: input.type,
+        model: input.model,
+        ...input.duration === void 0 ? {} : { duration: input.duration }
+      });
+      return {
+        ok: result.ok,
+        ...result.credits === void 0 ? {} : { credits: result.credits },
+        ...result.billedAmount === void 0 ? {} : { billedAmount: result.billedAmount },
+        ...result.billedUnit === void 0 ? {} : { billedUnit: result.billedUnit },
+        ...result.modelId === void 0 ? {} : { modelId: result.modelId },
+        ...result.message === void 0 ? {} : { message: result.message }
+      };
+    },
     async balance(channel = "xyq", options = {}) {
       const healed = await readyFor(channel, options);
       if (!healed.ok) return { ok: false, message: healed.message };
@@ -3844,6 +3873,57 @@ function xyqTools(service, deps = {}) {
     },
     {
       /**
+       * 事前报价（0.10.0）：跑之前先问"要花多少积分"。
+       * 短剧通道包 `jimeng-novel credit estimate`；画布通道传 `nodeIds` 复用 `node quote`。
+       */
+      name: "xyq_estimate",
+      description: "\u4E8B\u524D\u62A5\u4EF7\uFF1A\u8DD1\u4E4B\u524D\u5148\u770B\u8981\u82B1\u591A\u5C11\u79EF\u5206\u3002type=image|video\u3001model=\u6A21\u578B key\uFF08\u5148\u7528 xyq_models \u67E5\uFF09\u3001duration=\u89C6\u9891\u79D2\u6570\u3002\u9ED8\u8BA4\u8D70\u5373\u68A6\u77ED\u5267\u901A\u9053\uFF08`credit estimate`\uFF09\uFF1B\u4F20 `nodeIds`\uFF08\u914D `canvasId`\uFF09\u5219\u62A5\u753B\u5E03\u8282\u70B9\u4EF7\uFF08`node quote`\uFF09\u3002\u5C0F\u4E91\u96C0\u901A\u9053\u6CA1\u6709\u4E8B\u524D\u62A5\u4EF7\u63A5\u53E3\uFF0C\u53EA\u56DE\u4F59\u989D\u53E3\u5F84\u3002\u89C6\u9891\u5F88\u8D35\uFF08\u5B9E\u6D4B 4 \u79D2 76 \u79EF\u5206\uFF09\uFF0C\u751F\u6210\u89C6\u9891\u524D\u52A1\u5FC5\u5148\u8C03\u4E00\u6B21\u3002",
+      parameters: {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["image", "video"], description: "\u56FE\u7247\u8FD8\u662F\u89C6\u9891" },
+          model: { type: "string", description: "\u6A21\u578B key\uFF08\u4E24\u6761\u901A\u9053\u4E0D\u901A\u7528\uFF0C\u5148\u7528 xyq_models \u67E5\uFF09" },
+          duration: { type: "number", description: "\u89C6\u9891\u7528\uFF1A\u79D2\u6570\uFF08\u4E0D\u4F20\u6309 4 \u79D2\u4F30\uFF09" },
+          channel: { type: "string", enum: CHANNEL_ENUM, description: "\u901A\u9053\uFF1Axyq=\u5C0F\u4E91\u96C0\uFF08\u9ED8\u8BA4\uFF09\uFF0Cjimeng=\u5373\u68A6" },
+          canvasId: { type: "string", description: "\u753B\u5E03\u7528\uFF1AprojectId\uFF08\u4E0E nodeIds \u4E00\u8D77\u4F20\u624D\u8D70\u753B\u5E03\u62A5\u4EF7\uFF09" },
+          nodeIds: { type: "array", items: { type: "string" }, description: "\u753B\u5E03\u7528\uFF1A\u8282\u70B9 id\uFF08\u4F20\u4E86\u5C31\u8D70 node quote\uFF09" }
+        },
+        required: ["type", "model"]
+      },
+      output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
+      timeoutMs: 9e4,
+      async execute(args) {
+        const type = args.type === "video" ? "video" : args.type === "image" ? "image" : "";
+        if (type === "") throw new Error("type \u53EA\u80FD\u662F image / video");
+        const model = typeof args.model === "string" ? args.model.trim() : "";
+        const channel = channelOf(args, service.config().defaultChannel);
+        const ignored = ignoredKeys2(args, ["type", "model", "duration", "channel", "canvasId", "nodeIds"]);
+        const tailOf = (text) => ignored.length === 0 ? text : `${text}
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+        if (channel === "xyq") {
+          throw new Error('\u5C0F\u4E91\u96C0\u901A\u9053\u6CA1\u6709\u4E8B\u524D\u62A5\u4EF7\u63A5\u53E3\uFF08\u5B83\u53EA\u56DE\u4F59\u989D\u4E0E\u9884\u7B97\u4E0A\u9650\uFF09\u3002\u8981\u4E8B\u524D\u62A5\u4EF7\u8BF7\u7528 channel="jimeng"\uFF0C\u6216\u5148 xyq_balance \u770B\u4F59\u989D\u3002');
+        }
+        const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter((v) => typeof v === "string" && v !== "") : [];
+        if (nodeIds.length > 0) {
+          if (deps.canvas === void 0) throw new Error("\u753B\u5E03\u62A5\u4EF7\u9700\u8981\u753B\u5E03\u670D\u52A1\uFF0C\u4F46\u672C\u673A\u6CA1\u63A5\u4E0A\uFF08\u6CA1\u88C5 dreamina-canvas\uFF1F\uFF09");
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const quote = await deps.canvas.quote({ canvasId, nodeIds });
+          if (quote.ok !== true || quote.data === void 0) throw new Error(quote.message ?? "\u753B\u5E03\u62A5\u4EF7\u5931\u8D25");
+          return tailOf(`\u9884\u8BA1\u6D88\u8017\uFF1A${quote.data.credits} \u79EF\u5206\uFF08\u753B\u5E03\u8282\u70B9 ${nodeIds.length} \u4E2A\uFF5C\u901A\u9053 jimeng/\u753B\u5E03\uFF09`);
+        }
+        const result = await service.estimate({
+          channel,
+          type,
+          model,
+          ...typeof args.duration === "number" ? { duration: args.duration } : {}
+        });
+        if (result.ok !== true || result.credits === void 0) throw new Error(result.message ?? "\u62A5\u4EF7\u5931\u8D25");
+        const billed = result.billedAmount === void 0 || result.billedUnit === void 0 ? "" : `\uFF08\u6309 ${result.billedAmount} ${result.billedUnit} \u8BA1\uFF09`;
+        return tailOf(`\u9884\u8BA1\u6D88\u8017\uFF1A${result.credits} \u79EF\u5206${billed}\uFF5C\u901A\u9053 jimeng\uFF08\u5373\u68A6\uFF09\uFF5C\u6A21\u578B ${result.modelId ?? model}`);
+      }
+    },
+    {
+      /**
        * 指南兜底（契约要求每个域留一个 `<域>_guide`）：与 skill `dafeiyu-xyq` 同一份正文。
        * 模型没加载到 skill 时，一次工具调用就能拿到「什么时候选哪条通道」的口径。
        */
@@ -4073,6 +4153,41 @@ ${result.stderr}`;
       const value = pickNumber(answered.envelope?.data, ["balance", "credits", "total", "remain"]);
       if (value === void 0) return { ok: false, message: "\u5373\u68A6\u6CA1\u6709\u8FD4\u56DE\u79EF\u5206\u4F59\u989D\u5B57\u6BB5" };
       return { ok: true, totalRemain: String(value) };
+    },
+    /**
+         * 事前报价（0.10.0）：`jimeng-novel credit estimate --type image|video --model <key> [--duration N] -j`。
+         * 真机回包：`{data:{estimatedCredits:4, billedAmount:1, billedUnit:"image", modelId, priceStatus}}`。
+         * 视频按时长计价（实测 `Seedance_2.5_flash` 4 秒 = 76 积分），所以视频**强烈建议**先报一次。
+         */
+    async estimate(input) {
+      const ready = await ensureAvailable();
+      if ("message" in ready) return { ok: false, message: ready.message };
+      if (input.model.trim() === "") {
+        return { ok: false, message: "\u62A5\u4EF7\u9700\u8981 model\uFF08\u5148\u7528 xyq_models \u67E5\u8BE5\u901A\u9053\u7684\u6A21\u578B key\uFF09" };
+      }
+      const args = [ready.cli, "credit", "estimate", "--type", input.type, "--model", input.model];
+      if (input.type === "video" && typeof input.duration === "number" && input.duration > 0) {
+        args.push("--duration", String(Math.round(input.duration)));
+      }
+      const answered = await call([...args, "-j"], 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = answered.envelope?.data;
+      const credits = pickNumber(data, ["estimatedCredits", "credits", "totalCredits"]);
+      if (credits === void 0) {
+        return { ok: false, message: `\u62A5\u4EF7\u56DE\u5305\u91CC\u6CA1\u6709\u79EF\u5206\u5B57\u6BB5\uFF1A${JSON.stringify(data ?? {}).slice(0, 200)}` };
+      }
+      const record = data !== null && typeof data === "object" ? data : {};
+      const billedAmount = typeof record.billedAmount === "number" ? record.billedAmount : void 0;
+      const billedUnit = typeof record.billedUnit === "string" ? record.billedUnit : void 0;
+      const modelId = typeof record.modelId === "string" ? record.modelId : input.model;
+      return {
+        ok: true,
+        credits,
+        unit: "credits",
+        ...billedAmount === void 0 ? {} : { billedAmount },
+        ...billedUnit === void 0 ? {} : { billedUnit },
+        modelId
+      };
     },
     async models(kind) {
       const ready = await ensureAvailable();
@@ -4882,7 +4997,7 @@ function startXyq(ctx, deps) {
     try {
       const tools = ctx.get?.("tools", true);
       if (tools && typeof tools.register === "function") {
-        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool);
+        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot), canvas: canvasService }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool);
         probe.tools = "registered";
       } else {
         probe.tools = "no-tools";

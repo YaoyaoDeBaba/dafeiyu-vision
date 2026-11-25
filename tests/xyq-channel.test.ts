@@ -386,7 +386,7 @@ test('工具：5 个工具齐全，六个键都硬，xyq_guide 返回注入正�
     const tools = xyqTools(h.service, { guideBody: () => body })
     assert.deepEqual(
       tools.map((tool) => String(tool.name)).sort(),
-      ['generate_image', 'generate_video', 'xyq_balance', 'xyq_guide', 'xyq_models'],
+      ['generate_image', 'generate_video', 'xyq_balance', 'xyq_estimate', 'xyq_guide', 'xyq_models'],
     )
     for (const tool of tools) {
       for (const key of ['name', 'description', 'parameters', 'output', 'timeoutMs', 'execute']) {
@@ -439,7 +439,7 @@ test('产品名：manifest 的 description 写「鲸鱼做梦」，包名/工具
   assert.match(String(pkg.description), /鲸鱼做梦/)
   assert.equal(pkg.name, 'dsh-vision-dafeiyu', '包名不许改')
   const tools = xyqTools(makeHarness().service).map((tool) => String(tool.name))
-  assert.deepEqual(tools.sort(), ['generate_image', 'generate_video', 'xyq_balance', 'xyq_guide', 'xyq_models'], '工具名不许改')
+  assert.deepEqual(tools.sort(), ['generate_image', 'generate_video', 'xyq_balance', 'xyq_estimate', 'xyq_guide', 'xyq_models'], '工具名不许改')
 })
 
 test('即梦模型解析：信封字段是 data.models（实测形状），不是 items', async () => {
@@ -497,4 +497,67 @@ test('配置：defaultChannel 只认 xyq / jimeng，脏值回落 xyq', () => {
   assert.equal(normalizeXyqConfig({ defaultChannel: 'jimeng' }).defaultChannel, 'jimeng')
   assert.equal(normalizeXyqConfig({ defaultChannel: 'kuake' }).defaultChannel, 'xyq')
   assert.equal(normalizeXyqConfig({ defaultChannel: 1 }).defaultChannel, 'xyq')
+})
+
+// ── 0.10.0：事前报价 xyq_estimate ────────────────────────────────────
+
+test('service.estimate：小云雀如实说没有事前报价接口（不给假数字）', async () => {
+  const h = makeHarness()
+  try {
+    const noQuote = await h.service.estimate({ channel: 'xyq', type: 'image', model: 'x' })
+    assert.equal(noQuote.ok, false)
+    assert.match(String(noQuote.message), /没有事前报价接口/)
+  } finally {
+    h.cleanup()
+  }
+})
+test('xyq_estimate：视频报价把 duration 交给通道（视频按秒计价）', async () => {
+  const h = makeHarness()
+  try {
+    let seen: Record<string, unknown> | undefined
+    // 只验「工具 → service.estimate」这一层：duration 必须原样传下去（真机 4 秒 76 积分）
+    const fakeService = {
+      ...h.service,
+      estimate: async (input: Record<string, unknown>) => {
+        seen = input
+        return { ok: true, credits: 76, billedAmount: 4, billedUnit: 'second', modelId: 'Seedance_2.5_flash' }
+      },
+    }
+    const tool = xyqTools(fakeService as never).find((item) => item.name === 'xyq_estimate') as {
+      execute: (args: Record<string, unknown>) => Promise<string>
+    }
+    const text = await tool.execute({ type: 'video', model: 'Seedance_2.5_flash', duration: 4, channel: 'jimeng' })
+    assert.match(text, /预计消耗：76 积分/)
+    assert.match(text, /按 4 second 计/)
+    assert.equal(seen?.duration, 4, 'duration 必须传给通道')
+    assert.equal(seen?.model, 'Seedance_2.5_flash')
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('xyq_estimate：画布节点走 node quote（传 nodeIds 就不再走 credit estimate）', async () => {
+  const h = makeHarness()
+  try {
+    const tools = xyqTools(h.service, {
+      canvas: { quote: async () => ({ ok: true, data: { credits: 9, raw: '{}' } }) } as never,
+    })
+    const tool = tools.find((item) => item.name === 'xyq_estimate') as { execute: (args: Record<string, unknown>) => Promise<string> }
+    const text = await tool.execute({ type: 'image', model: 'seedream_5.5', channel: 'jimeng', canvasId: 'p-1', nodeIds: ['n-1'] })
+    assert.match(text, /预计消耗：9 积分/)
+    assert.match(text, /画布节点 1 个/)
+    assert.equal(h.jimengCalls.length, 0, '画布报价不许再去跑 credit estimate')
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('xyq_estimate：小云雀通道没有报价接口 ⇒ 中文说清，不瞎给数字', async () => {
+  const h = makeHarness()
+  try {
+    const tool = xyqTools(h.service).find((item) => item.name === 'xyq_estimate') as { execute: (args: Record<string, unknown>) => Promise<string> }
+    await assert.rejects(() => tool.execute({ type: 'image', model: 'x', channel: 'xyq' }), /没有事前报价接口/)
+  } finally {
+    h.cleanup()
+  }
 })

@@ -83,3 +83,25 @@ description: 大肥鱼-鲸鱼做梦：generate_image / generate_video / xyq_bala
 - `node delete` 的清单（`deletionConfirmation`）在**信封顶层**，不在 `data` 里；
 - 画布 CLI 用 `--format json`（**不是 `-j`**），而且**错误信封可能写到 stderr**——所以插件两边都解析；
 - 产物带「AI 生成」水印，做头像/图标要裁缩。
+
+## 事前报价 `xyq_estimate`（0.10.0）
+
+跑之前先问价，别事后看余额：
+
+```
+xyq_estimate({ type: 'image' | 'video', model: '<key>', duration?: 秒, channel?: 'jimeng' })
+→ 预计消耗：N 积分（按 X <unit> 计）｜通道 jimeng（即梦）｜模型 <key>
+```
+
+- 即梦短剧通道包 `jimeng-novel credit estimate`；画布节点价传 `canvasId`+`nodeIds`（走 `node quote`）；
+- **小云雀通道没有事前报价接口**，工具会如实说，让你改用 `xyq_balance` 看余额；
+- 真机参考价（2026-11-25）：**`seedream_5.5` 图片 = 4 积分/张**；**`Seedance_2.5_flash` 视频 4 秒 = 76 积分**。
+  **视频动辄几十积分**，生成视频前必须先调 `xyq_estimate`，超预算就换成 `Seedance_2.5_draft` 或缩短秒数。
+
+### 视频模型 key（照抄，别自己猜）
+
+`Seedance_2.5_flash` / `Seedance_2.5_draft` / `Seedance_2.5` / `seedance2.0_fast_vision` / `seedance2.0_vision` /
+`Seedance_2.0_mini` / `wan3.0` / `happyhorse-1.1`
+
+⚠️ **`seedance_2.0` 不是有效 key**（会吃 `unknown or disabled model`）。图片侧常见 key：`seedream_5.5` / `seedream_5.0_pro` /
+`nova_pro` / `gpt_image_2_5_sunburst` / `qwen_image_3.0_pro` / `ali_midjourney_8_2`。

@@ -9,12 +9,15 @@
 import type { XyqService } from './service.js'
 import { channelParamError, normalizeChannelId, XYQ_CHANNEL_IDS } from './channel.js'
 import { XYQ_GUIDE_FALLBACK } from './skill.js'
+import type { CanvasService } from './canvas/service.js'
 
 const CHANNEL_ENUM = [...XYQ_CHANNEL_IDS]
 
 export interface XyqToolsDeps {
   /** 指南正文（读 skill 的 SKILL.md，单一真源）；不传就用内置短版。 */
   guideBody?: () => string
+  /** 即梦画布服务（0.10.0 起给 xyq_estimate 报「画布节点」价用）。 */
+  canvas?: CanvasService
 }
 
 /** 认不出的参数键要显形（契约：不许静默吞掉）。 */
@@ -206,6 +209,65 @@ export function xyqTools(service: XyqService, deps: XyqToolsDeps = {}): Array<Re
         const list = result.models ?? []
         const body = list.length === 0 ? '（没有查到模型）' : list.map((model) => `- ${model.name}（${model.key}）`).join('\n')
         return withIgnored(body, ignored)
+      },
+    },
+{
+      /**
+       * 事前报价（0.10.0）：跑之前先问"要花多少积分"。
+       * 短剧通道包 `jimeng-novel credit estimate`；画布通道传 `nodeIds` 复用 `node quote`。
+       */
+      name: 'xyq_estimate',
+      description:
+        '事前报价：跑之前先看要花多少积分。type=image|video、model=模型 key（先用 xyq_models 查）、duration=视频秒数。' +
+        '默认走即梦短剧通道（`credit estimate`）；传 `nodeIds`（配 `canvasId`）则报画布节点价（`node quote`）。' +
+        '小云雀通道没有事前报价接口，只回余额口径。视频很贵（实测 4 秒 76 积分），生成视频前务必先调一次。',
+      parameters: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['image', 'video'], description: '图片还是视频' },
+          model: { type: 'string', description: '模型 key（两条通道不通用，先用 xyq_models 查）' },
+          duration: { type: 'number', description: '视频用：秒数（不传按 4 秒估）' },
+          channel: { type: 'string', enum: CHANNEL_ENUM, description: '通道：xyq=小云雀（默认），jimeng=即梦' },
+          canvasId: { type: 'string', description: '画布用：projectId（与 nodeIds 一起传才走画布报价）' },
+          nodeIds: { type: 'array', items: { type: 'string' }, description: '画布用：节点 id（传了就走 node quote）' },
+        },
+        required: ['type', 'model'],
+      },
+      output: { schema: { type: 'string' }, render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }] },
+      timeoutMs: 90_000,
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const type = args.type === 'video' ? 'video' : args.type === 'image' ? 'image' : ''
+        if (type === '') throw new Error('type 只能是 image / video')
+        const model = typeof args.model === 'string' ? args.model.trim() : ''
+        const channel = channelOf(args, service.config().defaultChannel)
+        const ignored = ignoredKeys(args, ['type', 'model', 'duration', 'channel', 'canvasId', 'nodeIds'])
+        const tailOf = (text: string): string => (ignored.length === 0 ? text : `${text}\n（忽略未知参数：${ignored.join(', ')}）`)
+
+        if (channel === 'xyq') {
+          throw new Error('小云雀通道没有事前报价接口（它只回余额与预算上限）。要事前报价请用 channel="jimeng"，或先 xyq_balance 看余额。')
+        }
+
+        const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter((v): v is string => typeof v === 'string' && v !== '') : []
+        if (nodeIds.length > 0) {
+          if (deps.canvas === undefined) throw new Error('画布报价需要画布服务，但本机没接上（没装 dreamina-canvas？）')
+          const canvasId = typeof args.canvasId === 'string' ? args.canvasId : ''
+          const quote = await deps.canvas.quote({ canvasId, nodeIds })
+          if (quote.ok !== true || quote.data === undefined) throw new Error(quote.message ?? '画布报价失败')
+          return tailOf(`预计消耗：${quote.data.credits} 积分（画布节点 ${nodeIds.length} 个｜通道 jimeng/画布）`)
+        }
+
+        const result = await service.estimate({
+          channel,
+          type,
+          model,
+          ...(typeof args.duration === 'number' ? { duration: args.duration } : {}),
+        })
+        if (result.ok !== true || result.credits === undefined) throw new Error(result.message ?? '报价失败')
+        const billed =
+          result.billedAmount === undefined || result.billedUnit === undefined
+            ? ''
+            : `（按 ${result.billedAmount} ${result.billedUnit} 计）`
+        return tailOf(`预计消耗：${result.credits} 积分${billed}｜通道 jimeng（即梦）｜模型 ${result.modelId ?? model}`)
       },
     },
     {
