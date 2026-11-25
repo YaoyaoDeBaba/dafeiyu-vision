@@ -1,6 +1,6 @@
 ---
 name: dafeiyu-xyq
-description: 大肥鱼-鲸鱼做梦：generate_image / generate_video / xyq_balance / xyq_models 底下有两条生成通道——小云雀（channel=xyq，默认）与即梦（channel=jimeng）。这篇讲什么时候选即梦（画布/短剧）、什么时候选云雀（营销成片/短剧 agent 全流程）、两条通道的安装与登录命令、计费差异、调用前自愈怎么读结果。用户要把图/视频交给小云雀或即梦生成、或问「用哪个通道 / 为什么没反应 / 怎么装」时读它。
+description: 大肥鱼-鲸鱼做梦：generate_image / generate_video / xyq_balance / xyq_models 底下有两条生成通道，另有 xyq_canvas 操作即梦画布（只读查画布/节点 + 需 confirm 的写操作与删除）——小云雀（channel=xyq，默认）与即梦（channel=jimeng）。这篇讲什么时候选即梦（画布/短剧）、什么时候选云雀（营销成片/短剧 agent 全流程）、两条通道的安装与登录命令、计费差异、调用前自愈怎么读结果。用户要把图/视频交给小云雀或即梦生成、或问「用哪个通道 / 为什么没反应 / 怎么装」时读它。
 ---
 
 # 大肥鱼-鲸鱼做梦：小云雀 vs 即梦
@@ -17,6 +17,7 @@ description: 大肥鱼-鲸鱼做梦：generate_image / generate_video / xyq_bala
 | 额度 | `xyq_balance` 云雀段（内部 `get-credit-balance`） | `xyq_balance` 即梦段（内部 `jimeng-novel credit get`） |
 | 计费 | 积分：视频按时长（约 4 积分/秒）、图片按张 | 积分：视频按秒、图片按张，音频/超分另算；准数用 `jimeng-novel credit estimate` |
 | 模型名 | `xyq_models`（通道 xyq） | `xyq_models`（通道 jimeng）或 `jimeng-novel model list --type image` |
+| 画布/节点 | — | **`xyq_canvas`**（`dreamina-canvas`）：status/canvases/current/nodes 只读；create-canvas/node-create/node-run/node-delete 需 `confirm:true` |
 
 ## 什么时候选即梦
 
@@ -46,3 +47,39 @@ description: 大肥鱼-鲸鱼做梦：generate_image / generate_video / xyq_bala
 - 模型名两条通道不通用：切了通道先用 `xyq_models` 查那一边的模型名。
 - 生成完把**本地文件绝对路径**给用户；即梦产物默认落 `<DSH_HOME>/storages/dsh-remote-dafeiyu/jimeng-output/`。
 - 「大肥鱼-鲸鱼做梦」是能力名，「小云雀」「即梦」是通道名，别把两者混着叫。
+
+## 即梦**画布**：`xyq_canvas`（和一次性出图是两回事）
+
+`generate_image` / `generate_video` 的 `channel=jimeng` 走的是**短剧 CLI**（`jimeng-novel`）的一次性命令：
+给个 prompt、出一张图/一段片。**画布**（`dreamina-canvas`）是另一条链路，管的是"画布 + 节点"这种工程化产物——
+要做多集短剧、分镜/导演台、反复改同一张图时用它。
+
+### 只读（随时可调，不花积分）
+
+| action | 干什么 |
+|---|---|
+| `status` | 画布登录态（已登录/未登录 + 到期时间 + CLI 版本）；装机自检就用它 |
+| `canvases` | 列画布（projectId / name / webUrl） |
+| `current` | 当前画布（没选就是 null） |
+| `nodes` | 列节点摘要（nodeId / type / title / status / tags），可带 `canvasId`、`type`、`status`、`query`、`limit`(≤50)、`offset` |
+
+### 写操作：**一律要 `confirm:true`**，而且分两步看结果
+
+| action | 代价 | 说明 |
+|---|---|---|
+| `create-canvas {name, confirm}` | 免费 | 在你账号里建一个画布（一次调用只建 1 个）；建完把 projectId 记下来 |
+| `node-create {canvasId, model, prompt, confirm, count?, mode?}` | 免费 | 只建节点**不跑**（不带 `--run`），所以不扣积分；真机 `--title` 必需，插件会自动用 prompt 前 24 字补 |
+| `node-quote {canvasId, nodeIds}` | 免费 | 回「预计消耗 N 积分（本次上限 M）」 |
+| `node-run {canvasId, nodeIds, confirm:true}` | **扣积分** | 内部：先 quote → **超过设置上限就一次判死、直接报错**（不会再问第二次，也不会再调 confirm/run）→ `node confirm` 拿凭证 → `node run --wait` → 自动 `resource download` 落到 `<DSH_HOME>/storages/dsh-remote-dafeiyu/jimeng-output/` |
+| `node-download {canvasId, resourceIds}` | 免费 | 跑完没下到、或事后想再下 |
+| `node-delete {canvasId, nodeIds, confirm}` | 免费 | **不带 confirm**：只回「将要删除 N 个节点：标题｜类型｜nodeId（子节点数）」+ 合计，**一条删除请求都不发**；带 `confirm:true` 才真删（不可逆） |
+| `canvas-delete {canvasId, confirm}` | 免费 | **CLI 没有删画布的命令**——会如实回「删不了 + 该画布的网页地址」，让用户自己去网页删；`force` 参数保留但不改变结果 |
+
+### 画布的几条硬事实（踩过，别赌）
+
+- 产物**不是路径也不是 URL**：`node run/show` 只给 `resources[].resourceId`（+ `creditsAmount` 实扣积分），
+  要内容必须 `resource download <resourceId> -o <dir>`；
+- 已登录时 `auth login` 回 `{"status":"reused"}`——按"已登录"处理，别当成"没拿到设备码"；
+- `node delete` 的清单（`deletionConfirmation`）在**信封顶层**，不在 `data` 里；
+- 画布 CLI 用 `--format json`（**不是 `-j`**），而且**错误信封可能写到 stderr**——所以插件两边都解析；
+- 产物带「AI 生成」水印，做头像/图标要裁缩。
