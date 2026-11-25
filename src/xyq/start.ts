@@ -31,6 +31,9 @@ import { createJimengService } from './jimeng/service.js'
 import type { LocateDeps } from './jimeng/cli.js'
 import type { GenerationChannel } from './channel.js'
 import { readXyqSkillBody, XYQ_SKILL_NAME } from './skill.js'
+import { createCanvasCli } from './canvas/cli.js'
+import { createCanvasService } from './canvas/service.js'
+import { canvasTools } from './canvas/tools.js'
 import { fileURLToPath } from 'node:url'
 
 interface LooseContext {
@@ -95,6 +98,9 @@ export function startXyq(
       outDir: deps.jimengOutDir ?? path.join(deps.dshHome, 'storages', 'dsh-remote-dafeiyu', 'jimeng-output'),
       ...(deps.jimengLocateDeps === undefined ? {} : { locateDeps: deps.jimengLocateDeps }),
     })
+  // 即梦画布（只读起步）：**独立的 flag（--format json）与信封（{ok,data,error}）**，见 canvas/cli.ts
+  const canvasCli = createCanvasCli({ run })
+  const canvasService = createCanvasService({ cli: canvasCli, log: deps.log })
   // `locateCli` 是**纯定位**（不装）：云雀自愈默认只报错，装不装由调用方的 autoInstall 决定；
   // `resolveCli` 仍留在 call() 里（真正跑命令时的兜底）。
   const service = createXyqService({
@@ -202,7 +208,7 @@ export function startXyq(
       const tools = ctx.get?.('tools', true) as { register?: (definition: Record<string, unknown>) => unknown } | undefined
       if (tools && typeof tools.register === 'function') {
         // `xyq_guide` 读的就是 skill 那份 SKILL.md —— 单一真源（同识图的做法）。
-        for (const tool of xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) })) tools.register(tool)
+        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) }), ...canvasTools(canvasService)]) tools.register(tool)
         probe.tools = 'registered'
       } else {
         probe.tools = 'no-tools'
@@ -240,6 +246,25 @@ export function startXyq(
       deps.log('即梦通道探测抛错（小云雀不受影响）', {
         message: String((error as Error)?.message ?? error).slice(0, 200),
       })
+    }
+    // 画布是**另一条 CLI**（dreamina-canvas）：各探各的，缺一个不影响另一个。
+    // 放在即梦之后：它要多跑一次 `auth status`（子进程），别把 probe.jimeng 拖晚。
+    try {
+      const canvasPath = canvasCli.path()
+      probe.canvas = canvasPath === undefined ? 'unavailable:没找到 dreamina-canvas' : `available:${canvasPath}`
+      if (canvasPath === undefined) {
+        deps.log('即梦画布不可用（短剧/云雀不受影响）', { hint: 'irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex' })
+      } else {
+        const canvasStatus = await canvasService.status()
+        probe['canvas.auth'] =
+          canvasStatus.ok === true
+            ? canvasStatus.data?.loggedIn === true
+              ? 'logged-in'
+              : 'not-logged-in'
+            : `unknown:${String(canvasStatus.message ?? '').slice(0, 110)}`
+      }
+    } catch (error) {
+      probe.canvas = `probe threw:${String((error as Error)?.message ?? error).slice(0, 80)}`
     }
   })()
 

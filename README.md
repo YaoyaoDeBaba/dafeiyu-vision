@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 91 条判据
+npm test            # 构建 + 103 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -478,3 +478,41 @@ web_image_gen({ prompt: '一只戴红帽的蓝色小鲸鱼，扁平插画风，�
 - 传了显式 `channel` 仍以参数为准；传了不认识的值 ⇒ 工具抛中文、路由回 400（不静默回落）；
 - 路由侧：`/xyq/generate` 走即梦时**同步**返回（它的一次性命令自带 `--wait`），回包多带 `mode:'sync'` 与 `files`；云雀那条仍是 threadId 两段式；
 - `/xyq/models|balance` 支持 `?channel=`，模型列表按通道各查各的（两条通道模型名不通用）。
+
+## 十一、即梦**画布**通道（0.6.0，只读起步）
+
+`generate_image`/`generate_video` 走的是**短剧 CLI**（`jimeng-novel`）的一次性命令；
+**画布**（`dreamina-canvas`）是另一条 CLI、另一套信封，这里单独一个工具：
+
+```
+xyq_canvas({ action: 'status' | 'canvases' | 'current' | 'nodes' | 'login', canvasId?, type?, status?, query?, limit?, offset? })
+```
+
+| action | 调什么 | 返回 |
+|---|---|---|
+| `status` | `auth status` | 已登录/未登录 + 到期时间 + CLI 版本 |
+| `canvases` | `canvas ls` | 画布列表（projectId / name / webUrl / 时间） |
+| `current` | `canvas current` | 当前画布（没选就是 null） |
+| `nodes` | `node ls` | 节点定位摘要（nodeId / type / title / status / tags），单页 ≤50 |
+| `login` | `auth login` + 同一次调用内 `auth wait` | 链接 + 是否登录成功 |
+
+### 11.1 三条与短剧 CLI 不同的硬事实（都是真机踩出来的）
+
+1. **flag 是 `--format json`，不是 `-j`**：`auth status -j` 会返回 `code 2 The command contains an unrecognized option`；
+   适配器统一补 `--format json`，调用方只写子命令。
+2. **信封是 `{schemaVersion, ok, data, error:{code,message,diagnostics}}`**，不是短剧那套 `{status,data,error}`；
+   而且**错误信封可能写在 stderr**（`No project ID was provided` 那条就是），所以 stdout/stderr 都要解析。
+3. **命令名是 `node ls`**（不是 `node list`）。
+
+### 11.2 登录：device flow 必须有人轮询
+
+画布的授权**只在 CLI 侧 `auth wait` 时才会把凭证落盘**——用户点了浏览器、但没人跑 `auth wait`，
+`auth status` 会一直 `loggedIn:false`。所以 `action:'login'` 在**同一次调用里**等到 `loginWaitMs`
+（默认 **120 秒**，可配）：超时就如实回「点完再调一次」，并带上链接，绝不假装已登录。
+（上限不设 10 分钟：一次工具调用挂太久会把别的活饿死。）
+
+### 11.3 现状
+
+真机实测（2026-11-25）：`status` → 已登录、到期 2026-11-26T03:55、CLI 1.4.2；
+`canvases` → 0 个；`current` → null；`nodes` 未传 canvasId → 回「还没选中画布…」。
+写操作（create / run / director）**不在这一版**，等只读链路用稳再开。

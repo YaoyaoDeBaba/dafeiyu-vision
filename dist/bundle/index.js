@@ -918,8 +918,8 @@ async function launchCdpBrowser(options) {
       try {
         const shot = await call("Page.captureScreenshot", { format: "png" }, 15e3);
         if (shot?.data) {
-          const fs9 = await import("node:fs");
-          fs9.writeFileSync(file, Buffer.from(shot.data, "base64"));
+          const fs10 = await import("node:fs");
+          fs10.writeFileSync(file, Buffer.from(shot.data, "base64"));
         }
       } catch {
       }
@@ -3632,12 +3632,12 @@ function xyqFileHandler(deps) {
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
     const path15 = await import("node:path");
-    const fs9 = await import("node:fs");
+    const fs10 = await import("node:fs");
     const resolved = path15.resolve(target);
     const root = path15.resolve(deps.outDir);
     if (!resolved.startsWith(root + path15.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
-      const data = fs9.readFileSync(resolved);
+      const data = fs10.readFileSync(resolved);
       const ext = path15.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
@@ -4092,6 +4092,307 @@ ${result.stderr}`;
   };
 }
 
+// src/xyq/canvas/cli.ts
+import fs9 from "node:fs";
+function locateCanvasCli(deps = {}) {
+  const env = deps.env ?? process.env;
+  const explicit = (env.DREAMINA_CANVAS_CLI ?? "").trim();
+  if (explicit !== "" && (deps.exists ? deps.exists(explicit) : fs9.existsSync(explicit))) return explicit;
+  return locateJimengCli(deps).canvas;
+}
+function defaultExists(file) {
+  try {
+    return fs9.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+function parseCanvasEnvelope(stdout) {
+  const lines = String(stdout).split(/\r?\n/).filter((line) => line.trim() !== "");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line === void 0) continue;
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      const envelope = {};
+      if (typeof parsed.schemaVersion === "string") envelope.schemaVersion = parsed.schemaVersion;
+      if (typeof parsed.ok === "boolean") envelope.ok = parsed.ok;
+      if ("data" in parsed) envelope.data = parsed.data;
+      if (parsed.error !== null && typeof parsed.error === "object") envelope.error = parsed.error;
+      return envelope;
+    } catch {
+    }
+  }
+  return void 0;
+}
+function canvasErrorMessage(envelope, raw) {
+  if (envelope.ok !== false) return void 0;
+  const error = envelope.error;
+  const detail = (error?.diagnostics ?? []).map((entry) => typeof entry?.detail === "string" ? entry.detail : "").filter((text) => text !== "").join("\uFF1B");
+  const message = [error?.message, detail].filter((part) => typeof part === "string" && part !== "").join("\uFF5C");
+  if (/no project id/i.test(`${message} ${raw}`)) {
+    return '\u8FD8\u6CA1\u9009\u4E2D\u753B\u5E03\uFF1A\u5148\u8C03 xyq_canvas({action:"canvases"}) \u770B\u5217\u8868\uFF0C\u9009\u4E00\u4E2A\u628A projectId \u4F5C\u4E3A canvasId \u4F20\u8FDB\u6765\uFF1B\u6216\u5148\u5728\u7F51\u9875\u91CC\u9009\u597D\u5F53\u524D\u753B\u5E03\u3002';
+  }
+  return message === "" ? `\u5373\u68A6\u753B\u5E03\u547D\u4EE4\u5931\u8D25\uFF08\u6CA1\u6709\u7EC6\u8282\uFF09\uFF1A${String(raw).trim().slice(0, 200)}` : `\u5373\u68A6\u753B\u5E03\uFF1A${message.slice(0, 300)}`;
+}
+function createCanvasCli(deps) {
+  const locate = () => {
+    if (deps.executable !== void 0 && deps.executable !== "") return deps.executable;
+    if (deps.locate !== void 0) return deps.locate();
+    return locateCanvasCli(deps.locateDeps);
+  };
+  return {
+    path() {
+      return locate();
+    },
+    /**
+     * 跑一条命令。**注意**：这里自动补 `--format json`（画布不认 `-j`），
+     * 调用方只需要写子命令与参数。
+     */
+    async call(args, timeoutMs = 6e4) {
+      const cli = locate();
+      if (cli === void 0) {
+        return {
+          message: "\u6CA1\u627E\u5230\u5373\u68A6\u753B\u5E03 CLI\uFF08dreamina-canvas\uFF09\u3002\u88C5\u5B83\uFF1A\u5728 PowerShell \u91CC\u8DD1 `irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex`\uFF0C\u88C5\u5B8C\u518D\u8BD5\u3002"
+        };
+      }
+      const exists = deps.exists ?? defaultExists;
+      if (!exists(cli)) return { message: `\u5373\u68A6\u753B\u5E03 CLI \u8DEF\u5F84\u4E0D\u5B58\u5728\uFF1A${cli}` };
+      const result = await deps.run([cli, ...args, "--format", "json"], { env: {}, timeoutMs });
+      const raw = `${result.stdout}
+${result.stderr}`;
+      if (result.timedOut) return { message: `\u5373\u68A6\u753B\u5E03\u547D\u4EE4\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\uFF09` };
+      const envelope = parseCanvasEnvelope(result.stdout) ?? parseCanvasEnvelope(result.stderr);
+      if (envelope === void 0) {
+        return { message: `\u5373\u68A6\u753B\u5E03\u6CA1\u6709\u8FD4\u56DE\u53EF\u89E3\u6790\u7684 JSON\uFF1A${raw.trim().slice(0, 240) || "\uFF08\u7A7A\u8F93\u51FA\uFF09"}` };
+      }
+      const message = canvasErrorMessage(envelope, raw);
+      if (message !== void 0) return { message };
+      return { envelope };
+    }
+  };
+}
+
+// src/xyq/canvas/service.ts
+function asRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function str(value) {
+  return typeof value === "string" ? value : "";
+}
+function pickArray(value, keys) {
+  const record = asRecord(value);
+  for (const key of keys) {
+    const candidate = record?.[key];
+    if (Array.isArray(candidate)) return candidate.filter((item) => item !== null && typeof item === "object");
+  }
+  return Array.isArray(value) ? value : [];
+}
+function createCanvasService(deps) {
+  const waitMs = deps.loginWaitMs ?? 12e4;
+  return {
+    available() {
+      return deps.cli.path() !== void 0;
+    },
+    async status() {
+      const answered = await deps.cli.call(["auth", "status"], 3e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      return {
+        ok: true,
+        data: {
+          loggedIn: data?.loggedIn === true,
+          ...str(data?.expiresAt) === "" ? {} : { expiresAt: str(data?.expiresAt) },
+          ...str(data?.profile) === "" ? {} : { profile: str(data?.profile) },
+          ...str(data?.region) === "" ? {} : { region: str(data?.region) },
+          ...str(data?.version) === "" ? {} : { version: str(data?.version) }
+        }
+      };
+    },
+    async canvases() {
+      const answered = await deps.cli.call(["canvas", "ls"], 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      const items = pickArray(answered.envelope?.data, ["items"]).map((item) => ({
+        projectId: str(item.projectId) || str(item.id),
+        name: str(item.name) || str(item.title) || "(\u672A\u547D\u540D\u753B\u5E03)",
+        ...str(item.createdAt) === "" ? {} : { createdAt: str(item.createdAt) },
+        ...str(item.updatedAt) === "" ? {} : { updatedAt: str(item.updatedAt) },
+        ...str(item.webUrl) === "" ? {} : { webUrl: str(item.webUrl) }
+      }));
+      return { ok: true, data: { items, hasMore: data?.hasMore === true } };
+    },
+    async current() {
+      const answered = await deps.cli.call(["canvas", "current"], 3e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      const current = asRecord(data?.currentCanvas);
+      if (current === void 0) return { ok: true, data: null };
+      const projectId = str(current.projectId) || str(current.id);
+      const name = str(current.name) || str(current.title);
+      return { ok: true, data: { ...projectId === "" ? {} : { projectId }, ...name === "" ? {} : { name } } };
+    },
+    async nodes(input = {}) {
+      const args = ["node", "ls"];
+      if (typeof input.canvasId === "string" && input.canvasId !== "") args.push("--project-id", input.canvasId);
+      if (typeof input.type === "string" && input.type !== "") args.push("--type", input.type);
+      if (typeof input.status === "string" && input.status !== "") args.push("--status", input.status);
+      if (typeof input.query === "string" && input.query !== "") args.push("--query", input.query);
+      const limit = Math.min(Math.max(Math.round(input.limit ?? 20), 1), 50);
+      const offset = Math.min(Math.max(Math.round(input.offset ?? 0), 0), 1e3);
+      args.push("--limit", String(limit), "--offset", String(offset));
+      const answered = await deps.cli.call(args, 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      const items = pickArray(answered.envelope?.data, ["items"]).map((item) => ({
+        nodeId: str(item.nodeId) || str(item.id),
+        type: str(item.type),
+        title: str(item.title) || str(item.name),
+        status: str(item.status),
+        ...Array.isArray(item.tags) ? { tags: item.tags.filter((tag) => typeof tag === "string") } : {}
+      }));
+      return { ok: true, data: { items, hasMore: data?.hasMore === true, offset, limit } };
+    },
+    /**
+     * 登录：`auth login` 拿设备码 → **同一次调用内** `auth wait`。
+     *
+     * 为什么必须同一个调用里 wait（总管 2026-11-25 实测）：画布的 device flow
+     * 只在 CLI 侧轮询时才会把凭证落盘——用户点了浏览器、但没人跑 `auth wait`，
+     * 状态会一直是 `loggedIn:false`。所以这里等满 `loginWaitMs`（默认 120 秒），
+     * 超时就如实回「点完再调一次」，不假装已登录。**不自动开浏览器**（--no-browser），
+     * 把链接给用户自己点。
+     */
+    async login() {
+      const started = await deps.cli.call(["auth", "login", "--no-browser"], 6e4);
+      if (started.message !== void 0) return { ok: false, loggedIn: false, message: started.message };
+      const data = asRecord(started.envelope?.data);
+      const deviceCode = str(data?.deviceCode) || str(data?.device_code);
+      const link = str(data?.verificationUriComplete) || str(data?.verificationUri) || str(data?.url);
+      if (deviceCode === "") {
+        if (data?.loggedIn === true || data?.status === "logged_in") return { ok: true, loggedIn: true };
+        return {
+          ok: false,
+          loggedIn: false,
+          message: `\u5373\u68A6\u753B\u5E03\u767B\u5F55\u6CA1\u6709\u62FF\u5230\u8BBE\u5907\u7801\uFF1A${JSON.stringify(started.envelope?.data ?? {}).slice(0, 200)}\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1 dreamina-canvas auth login`
+        };
+      }
+      deps.log?.("\u5373\u68A6\u753B\u5E03\uFF1A\u5DF2\u53D1\u8D77\u6388\u6743\uFF0C\u7B49\u7528\u6237\u70B9\u94FE\u63A5\uFF08\u540C\u4E00\u6B21\u8C03\u7528\u5185 wait\uFF09", { waitMs });
+      const waited = await deps.cli.call(["auth", "wait", "--device-code", deviceCode, "--timeout", `${Math.round(waitMs / 1e3)}s`], waitMs + 3e4);
+      if (waited.message !== void 0) {
+        return {
+          ok: false,
+          loggedIn: false,
+          ...link === "" ? {} : { link },
+          message: `\u5373\u68A6\u753B\u5E03\u6388\u6743\u8FD8\u6CA1\u5B8C\u6210\uFF08${waited.message}\uFF09\u3002${link === "" ? "" : `\u70B9\u8FD9\u4E2A\u94FE\u63A5\u6388\u6743\uFF1A${link}`}\u70B9\u5B8C\u518D\u8C03\u4E00\u6B21 action=login\uFF08\u6216 action=status \u770B\u7ED3\u679C\uFF09\u3002`
+        };
+      }
+      const waitData = asRecord(waited.envelope?.data);
+      const loggedIn = waitData?.loggedIn === true || waitData?.status === "logged_in" || String(waitData?.status ?? "") === "success";
+      return {
+        ok: loggedIn,
+        loggedIn,
+        ...link === "" ? {} : { link },
+        ...loggedIn ? {} : { message: "\u6388\u6743\u7B49\u5F85\u7ED3\u675F\u4F46\u6CA1\u68C0\u51FA\u767B\u5F55\u6001\uFF1A\u70B9\u94FE\u63A5\u540E\u53EF\u80FD\u8D85\u65F6\u4E86\uFF0C\u518D\u8C03\u4E00\u6B21 action=login\u3002" }
+      };
+    }
+  };
+}
+
+// src/xyq/canvas/tools.ts
+var ACTIONS = ["status", "canvases", "current", "nodes", "login"];
+function ignoredKeys3(args, known) {
+  return Object.keys(args ?? {}).filter((key) => !known.includes(key));
+}
+function canvasTools(service) {
+  return [
+    {
+      name: "xyq_canvas",
+      description: '\u5373\u68A6**\u753B\u5E03**\u64CD\u4F5C\uFF08\u53EA\u8BFB\uFF09\uFF1Aaction=status \u67E5\u767B\u5F55\u6001\uFF1Bcanvases \u5217\u753B\u5E03\uFF08projectId/name/webUrl\uFF09\uFF1Bcurrent \u770B\u5F53\u524D\u753B\u5E03\uFF1Bnodes \u5217\u753B\u5E03\u91CC\u7684\u8282\u70B9\uFF08nodeId/type/title/status\uFF0C\u53EF\u5E26 canvasId/type/status/query/limit/offset\uFF09\uFF1Blogin \u53D1\u8D77\u6D4F\u89C8\u5668\u6388\u6743\u5E76**\u5728\u540C\u4E00\u6B21\u8C03\u7528\u91CC\u7B49\u5230 120 \u79D2**\uFF08\u753B\u5E03\u7684 device flow \u5FC5\u987B\u6709\u4EBA\u8F6E\u8BE2\u624D\u4F1A\u843D\u51ED\u8BC1\uFF0C\u53EA\u53D1\u94FE\u63A5\u7B49\u4E8E\u6CA1\u767B\uFF09\u3002\u4E0E `generate_image`/`generate_video` \u7684 channel=jimeng \u4E0D\u540C\uFF1A\u90A3\u6761\u662F"\u4E00\u6B21\u6027\u51FA\u56FE/\u51FA\u7247"\uFF0C\u8FD9\u6761\u662F"\u753B\u5E03\u5DE5\u7A0B"\u5165\u53E3\u3002\u753B\u5E03\u6CA1\u767B\u5F55\u65F6\u5148 action=login \u62FF\u94FE\u63A5\u7ED9\u7528\u6237\u70B9\uFF0C\u70B9\u5B8C\u518D\u8C03\u4E00\u6B21 status \u786E\u8BA4\u3002',
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: [...ACTIONS], description: "\u8981\u505A\u4EC0\u4E48\uFF1Astatus / canvases / current / nodes / login" },
+          canvasId: { type: "string", description: "nodes \u7528\uFF1A\u753B\u5E03 projectId\uFF08\u4E0D\u4F20\u5219\u7528\u5F53\u524D\u753B\u5E03\uFF09" },
+          type: { type: "string", description: "nodes \u7528\uFF1A\u8282\u70B9\u7C7B\u578B image / video / audio / text \u2026" },
+          status: { type: "string", description: "nodes \u7528\uFF1A\u8FD0\u884C\u72B6\u6001 empty / running / success / failed \u2026" },
+          query: { type: "string", description: "nodes \u7528\uFF1A\u6309\u6807\u9898/\u63CF\u8FF0/prompt \u6587\u672C\u5339\u914D" },
+          limit: { type: "number", description: "nodes \u7528\uFF1A\u5355\u9875\u6761\u6570\uFF081~50\uFF0C\u9ED8\u8BA4 20\uFF09" },
+          offset: { type: "number", description: "nodes \u7528\uFF1A\u5206\u9875\u504F\u79FB\uFF080~1000\uFF09" }
+        },
+        required: ["action"]
+      },
+      output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
+      timeoutMs: 24e4,
+      async execute(args) {
+        const action = typeof args.action === "string" ? args.action : "";
+        if (!ACTIONS.includes(action)) {
+          throw new Error(`action \u53EA\u80FD\u662F ${ACTIONS.join(" / ")}\uFF0C\u6536\u5230\u7684\u662F\u300C${String(args.action)}\u300D`);
+        }
+        const ignored = ignoredKeys3(args, ["action", "canvasId", "type", "status", "query", "limit", "offset"]);
+        const tail = (text) => ignored.length === 0 ? text : `${text}
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+        if (action === "status") {
+          const result2 = await service.status();
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u67E5\u4E0D\u5230\u5373\u68A6\u753B\u5E03\u767B\u5F55\u6001");
+          const data = result2.data;
+          return tail(
+            [
+              `\u5373\u68A6\u753B\u5E03\uFF1A${data.loggedIn ? "\u5DF2\u767B\u5F55" : "\u672A\u767B\u5F55"}`,
+              ...data.expiresAt === void 0 ? [] : [`\u51ED\u636E\u5230\u671F\uFF1A${data.expiresAt}`],
+              ...data.version === void 0 ? [] : [`CLI \u7248\u672C\uFF1A${data.version}`],
+              ...data.loggedIn ? [] : ['\u4E0B\u4E00\u6B65\uFF1A\u8C03 xyq_canvas({action:"login"}) \u62FF\u6388\u6743\u94FE\u63A5\u3002']
+            ].join("\n")
+          );
+        }
+        if (action === "canvases") {
+          const result2 = await service.canvases();
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u5217\u4E0D\u51FA\u753B\u5E03");
+          const items = result2.data.items;
+          if (items.length === 0) return tail("\u8FD9\u4E2A\u8D26\u53F7\u4E0B\u8FD8\u6CA1\u6709\u753B\u5E03\uFF080 \u4E2A\uFF09\u3002");
+          return tail(
+            [
+              `\u753B\u5E03 ${items.length} \u4E2A${result2.data.hasMore ? "\uFF08\u8FD8\u6709\u66F4\u591A\uFF09" : ""}\uFF1A`,
+              ...items.map((item) => `- ${item.name}\uFF5C${item.projectId}${item.webUrl === void 0 ? "" : `\uFF5C${item.webUrl}`}`)
+            ].join("\n")
+          );
+        }
+        if (action === "current") {
+          const result2 = await service.current();
+          if (result2.ok !== true) throw new Error(result2.message ?? "\u8BFB\u4E0D\u5230\u5F53\u524D\u753B\u5E03");
+          if (result2.data === null || result2.data === void 0) return tail("\u5F53\u524D\u6CA1\u6709\u9009\u4E2D\u753B\u5E03\uFF08\u53EF\u5728\u7F51\u9875\u91CC\u9009\uFF0C\u6216 create \u65F6\u52A0 --use\uFF09\u3002");
+          return tail(`\u5F53\u524D\u753B\u5E03\uFF1A${result2.data.name ?? "(\u672A\u547D\u540D)"}\uFF5C${result2.data.projectId ?? "(\u65E0 id)"}`);
+        }
+        if (action === "nodes") {
+          const result2 = await service.nodes({
+            ...typeof args.canvasId === "string" && args.canvasId !== "" ? { canvasId: args.canvasId } : {},
+            ...typeof args.type === "string" && args.type !== "" ? { type: args.type } : {},
+            ...typeof args.status === "string" && args.status !== "" ? { status: args.status } : {},
+            ...typeof args.query === "string" && args.query !== "" ? { query: args.query } : {},
+            ...typeof args.limit === "number" ? { limit: args.limit } : {},
+            ...typeof args.offset === "number" ? { offset: args.offset } : {}
+          });
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u5217\u4E0D\u51FA\u8282\u70B9");
+          const items = result2.data.items;
+          if (items.length === 0) return tail("\u8BE5\u8303\u56F4\u5185\u6CA1\u6709\u8282\u70B9\uFF080 \u6761\uFF09\u3002");
+          return tail(
+            [
+              `\u8282\u70B9 ${items.length} \u6761\uFF08offset ${result2.data.offset} / limit ${result2.data.limit}${result2.data.hasMore ? "\uFF0C\u8FD8\u6709\u66F4\u591A" : ""}\uFF09\uFF1A`,
+              ...items.map((item) => `- ${item.title || "(\u65E0\u6807\u9898)"}\uFF5C${item.type}\uFF5C${item.status}\uFF5C${item.nodeId}`)
+            ].join("\n")
+          );
+        }
+        const result = await service.login();
+        if (result.loggedIn) return tail("\u5373\u68A6\u753B\u5E03\u5DF2\u767B\u5F55\uFF08\u51ED\u636E\u5DF2\u843D\u76D8\uFF09\u3002");
+        const lines = [result.message ?? "\u5373\u68A6\u753B\u5E03\u6388\u6743\u6CA1\u5B8C\u6210\u3002"];
+        if (result.link !== void 0 && result.link !== "") lines.push(`\u6388\u6743\u94FE\u63A5\uFF1A${result.link}`);
+        return tail(lines.join("\n"));
+      }
+    }
+  ];
+}
+
 // src/xyq/start.ts
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -4141,6 +4442,8 @@ function startXyq(ctx, deps) {
     outDir: deps.jimengOutDir ?? path14.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
     ...deps.jimengLocateDeps === void 0 ? {} : { locateDeps: deps.jimengLocateDeps }
   });
+  const canvasCli = createCanvasCli({ run });
+  const canvasService = createCanvasService({ cli: canvasCli, log: deps.log });
   const service = createXyqService({
     configFile,
     run,
@@ -4239,7 +4542,7 @@ function startXyq(ctx, deps) {
     try {
       const tools = ctx.get?.("tools", true);
       if (tools && typeof tools.register === "function") {
-        for (const tool of xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) })) tools.register(tool);
+        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) }), ...canvasTools(canvasService)]) tools.register(tool);
         probe.tools = "registered";
       } else {
         probe.tools = "no-tools";
@@ -4273,6 +4576,18 @@ function startXyq(ctx, deps) {
       deps.log("\u5373\u68A6\u901A\u9053\u63A2\u6D4B\u629B\u9519\uFF08\u5C0F\u4E91\u96C0\u4E0D\u53D7\u5F71\u54CD\uFF09", {
         message: String(error?.message ?? error).slice(0, 200)
       });
+    }
+    try {
+      const canvasPath = canvasCli.path();
+      probe.canvas = canvasPath === void 0 ? "unavailable:\u6CA1\u627E\u5230 dreamina-canvas" : `available:${canvasPath}`;
+      if (canvasPath === void 0) {
+        deps.log("\u5373\u68A6\u753B\u5E03\u4E0D\u53EF\u7528\uFF08\u77ED\u5267/\u4E91\u96C0\u4E0D\u53D7\u5F71\u54CD\uFF09", { hint: "irm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex" });
+      } else {
+        const canvasStatus = await canvasService.status();
+        probe["canvas.auth"] = canvasStatus.ok === true ? canvasStatus.data?.loggedIn === true ? "logged-in" : "not-logged-in" : `unknown:${String(canvasStatus.message ?? "").slice(0, 110)}`;
+      }
+    } catch (error) {
+      probe.canvas = `probe threw:${String(error?.message ?? error).slice(0, 80)}`;
     }
   })();
   return {
