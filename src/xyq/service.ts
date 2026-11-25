@@ -9,11 +9,26 @@
  */
 import type { CliRunner, CliRunResult } from './cli.js'
 import { readXyqConfig, viewXyqConfig, writeXyqConfig, type XyqConfig } from './config.js'
+import {
+  XYQ_CHANNEL_LABELS,
+  unavailableMessage,
+  type ChannelGenerateResult,
+  type ChannelId,
+  type ChannelPreflight,
+  type ChannelPreflightOptions,
+  type ChannelProbe,
+  type GenerationChannel,
+} from './channel.js'
 
 export interface XyqServiceDeps {
   configFile: string
   run: CliRunner
   resolveCli: () => Promise<string | undefined>
+  /**
+   * 除云雀之外的生成通道（当前只有即梦）。
+   * 缺省 = 只有云雀，老行为逐字不变；传了也不会影响默认调用（channel 默认 'xyq'）。
+   */
+  channels?: Partial<Record<ChannelId, GenerationChannel>>
   log: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
   sleep?: (ms: number) => Promise<void>
   pollIntervalMs?: number
@@ -147,6 +162,99 @@ export function createXyqService(deps: XyqServiceDeps) {
     }
   }
 
+  /** 通道结果 → 云雀那套返回形状（工具层只认一种）。 */
+  function fromChannel(result: ChannelGenerateResult): XyqGenerateResult {
+    return {
+      ok: result.ok,
+      ...(result.message === undefined ? {} : { message: result.message }),
+      ...(result.files === undefined ? {} : { files: result.files }),
+      ...(result.webLink === undefined ? {} : { webLink: result.webLink }),
+    }
+  }
+
+  /**
+   * 取出某个通道；云雀自己不用在这里找（它就是这个 service）。
+   * 不可用时给出**中文原因 + 下一步命令**，绝不静默回落到云雀。
+   */
+  async function pickChannel(id: ChannelId): Promise<{ channel?: GenerationChannel; message?: string }> {
+    if (id === 'xyq') return {}
+    const channel = deps.channels?.[id]
+    if (channel === undefined) return { message: `没有接入「${XYQ_CHANNEL_LABELS[id] ?? id}」通道（只挂了云雀）` }
+    const status = await channel.probe()
+    if (!status.available) return { message: unavailableMessage(status) }
+    return { channel }
+  }
+
+  /**
+   * 云雀侧的「调用前自愈」三步（顺序固定）：CLI 在不在 → 授权/凭据在不在 → 凭据有没有效。
+   * 云雀用的是 Access Key（不是浏览器授权），所以第 2、3 步都落在 key 上；自动安装交给
+   * `resolveCli`（它内部会跑官方 ensure-cli），失败再给手工命令。
+   */
+  async function preflightXyq(options: ChannelPreflightOptions): Promise<ChannelPreflight> {
+    const config = readConfig()
+    if (!config.enabled) {
+      return { ok: false, message: '小云雀能力已关闭（设置页 → 大肥鱼 → 小云雀）。要用就先把开关打开。' }
+    }
+    const cli = await deps.resolveCli()
+    if (cli === undefined) {
+      deps.log('小云雀 CLI 没找到，自动安装也没成功（远控/识图不受影响）', { autoInstall: options.autoInstall ?? true })
+      return {
+        ok: false,
+        message: '没找到 pippit-tool-cli，自动安装也失败了。手工安装：在终端跑「npx @pippit-dev/cli@latest install」，装完再试一次。',
+      }
+    }
+    if (config.accessKey === '') {
+      return {
+        ok: false,
+        message: [
+          '小云雀还没填 Access Key。任选一处填（三处等价）：',
+          '① 设置页 →「大肥鱼 → 小云雀」→ Access Key 一栏；',
+          `② 或直接改配置文件 ${deps.configFile} 的 accessKey 字段（改完重启宿主）；`,
+          '③ 或设环境变量 XYQ_ACCESS_KEY（插件就是把它作为环境变量交给 CLI 的）。',
+          'Key 在小云雀官网 → ⚡CLI/API → API → 管理 Access Key 里建。',
+        ].join('\n'),
+      }
+    }
+    // 第三步：key 到底有没有效（读不出来就放行——不能因为读不出就把人拦在门外）
+    const answered = await call(['status'], 20_000)
+    if (answered.message !== undefined) return { ok: true }
+    const json = answered.json ?? {}
+    if (json.logged_in === false) {
+      return {
+        ok: false,
+        message: [
+          '小云雀 Access Key 没生效（过期或无效）。',
+          '去小云雀官网 → ⚡CLI/API → API → 管理 Access Key 更新，然后填到设置页「大肥鱼 → 小云雀」，',
+          `或改配置文件 ${deps.configFile} 的 accessKey，或设环境变量 XYQ_ACCESS_KEY。`,
+        ].join(''),
+        needsUser: true,
+      }
+    }
+    return { ok: true }
+  }
+
+  /** 通道自愈：即梦那种实现可选；抛错也算「不可用」，绝不带崩调用方。 */
+  async function healChannel(channel: GenerationChannel, options: ChannelPreflightOptions): Promise<ChannelPreflight> {
+    if (typeof channel.preflight !== 'function') return { ok: true }
+    try {
+      return await channel.preflight(options)
+    } catch (error) {
+      return { ok: false, message: `通道自愈时出错：${String((error as Error)?.message ?? error).slice(0, 200)}` }
+    }
+  }
+
+  /** 统一入口：先自愈再干活（默认通道 xyq 也在里面，老调用照样过这一关）。 */
+  async function readyFor(id: ChannelId, options: ChannelPreflightOptions): Promise<ChannelPreflight> {
+    if (id === 'xyq') return preflightXyq(options)
+    // 注意：这里**不走 pickChannel**——它按 probe 判可用，会把「没装」直接拦掉，
+    // 而自愈的本职恰恰是「没装就装」。通道存在就先让它自愈，装完 probe 自然通过。
+    const channel = deps.channels?.[id]
+    if (channel === undefined) {
+      return { ok: false, message: `没有接入「${XYQ_CHANNEL_LABELS[id] ?? id}」通道（只挂了云雀）` }
+    }
+    return healChannel(channel, options)
+  }
+
   return {
     config: readConfig,
     view: () => viewXyqConfig(readConfig()),
@@ -164,14 +272,35 @@ export function createXyqService(deps: XyqServiceDeps) {
       }
     },
 
-    async balance(): Promise<{ ok: boolean; totalRemain?: string; message?: string }> {
+    async balance(
+      channel: ChannelId = 'xyq',
+      options: ChannelPreflightOptions = {},
+    ): Promise<{ ok: boolean; totalRemain?: string; message?: string }> {
+      const healed = await readyFor(channel, options)
+      if (!healed.ok) return { ok: false, message: healed.message }
+      if (channel !== 'xyq') {
+        const picked = await pickChannel(channel)
+        if (picked.channel === undefined) return { ok: false, message: picked.message ?? '通道不可用' }
+        return picked.channel.balance()
+      }
       const answered = await call(['get-credit-balance'], 30_000)
       if (answered.message !== undefined) return { ok: false, message: answered.message }
       const json = answered.json ?? {}
       return { ok: true, totalRemain: typeof json.total_remain_amount === 'string' ? json.total_remain_amount : String(json.total_remain_amount ?? '') }
     },
 
-    async models(kind: 'video' | 'image'): Promise<{ ok: boolean; models?: Array<{ key: string; name: string }>; message?: string }> {
+    async models(
+      kind: 'video' | 'image',
+      channel: ChannelId = 'xyq',
+      options: ChannelPreflightOptions = {},
+    ): Promise<{ ok: boolean; models?: Array<{ key: string; name: string }>; message?: string }> {
+      const healed = await readyFor(channel, options)
+      if (!healed.ok) return { ok: false, message: healed.message }
+      if (channel !== 'xyq') {
+        const picked = await pickChannel(channel)
+        if (picked.channel === undefined) return { ok: false, message: picked.message ?? '通道不可用' }
+        return picked.channel.models(kind)
+      }
       const answered = await call(['model', 'list', '--type', kind], 60_000)
       if (answered.message !== undefined) return { ok: false, message: answered.message }
       const json = answered.json ?? {}
@@ -188,6 +317,78 @@ export function createXyqService(deps: XyqServiceDeps) {
       }
     },
 
+    /** 通道探测：只看「装没装」（登录态在真正调用时才查，探测不许拖慢启动）。 */
+    async channelProbes(): Promise<ChannelProbe[]> {
+      const rows: ChannelProbe[] = []
+      for (const id of ['xyq', 'jimeng'] as const) {
+        if (id === 'xyq') {
+          const cli = await deps.resolveCli()
+          rows.push(
+            cli === undefined
+              ? {
+                  id,
+                  label: XYQ_CHANNEL_LABELS[id],
+                  available: false,
+                  reason: '没找到 pippit-tool-cli',
+                  hint: '在终端跑「npx @pippit-dev/cli@latest install」',
+                }
+              : { id, label: XYQ_CHANNEL_LABELS[id], available: true, cliPath: cli },
+          )
+          continue
+        }
+        const channel = deps.channels?.[id]
+        if (channel === undefined) {
+          rows.push({ id, label: XYQ_CHANNEL_LABELS[id], available: false, reason: '没有接入这条通道' })
+          continue
+        }
+        rows.push(await channel.probe())
+      }
+      return rows
+    },
+
+    /** 余额工具用：两条通道各报一段（一条不可用不影响另一条；同样先过自愈）。 */
+    async balanceAll(options: ChannelPreflightOptions = {}): Promise<
+      Array<{ id: ChannelId; label: string; ok: boolean; totalRemain?: string; message?: string }>
+    > {
+      const rows: Array<{ id: ChannelId; label: string; ok: boolean; totalRemain?: string; message?: string }> = []
+      const xyqReady = await readyFor('xyq', options)
+      if (!xyqReady.ok) {
+        rows.push({ id: 'xyq', label: XYQ_CHANNEL_LABELS.xyq, ok: false, message: xyqReady.message })
+      } else {
+        const xyqAnswer = await call(['get-credit-balance'], 30_000)
+        if (xyqAnswer.message !== undefined) {
+          rows.push({ id: 'xyq', label: XYQ_CHANNEL_LABELS.xyq, ok: false, message: xyqAnswer.message })
+        } else {
+          const json = xyqAnswer.json ?? {}
+          rows.push({
+            id: 'xyq',
+            label: XYQ_CHANNEL_LABELS.xyq,
+            ok: true,
+            totalRemain: typeof json.total_remain_amount === 'string' ? json.total_remain_amount : String(json.total_remain_amount ?? ''),
+          })
+        }
+      }
+      const jimengReady = await readyFor('jimeng', options)
+      if (!jimengReady.ok) {
+        rows.push({ id: 'jimeng', label: XYQ_CHANNEL_LABELS.jimeng, ok: false, message: jimengReady.message })
+      } else {
+        const picked = await pickChannel('jimeng')
+        if (picked.channel === undefined) {
+          rows.push({ id: 'jimeng', label: XYQ_CHANNEL_LABELS.jimeng, ok: false, message: picked.message ?? '通道不可用' })
+        } else {
+          const result = await picked.channel.balance()
+          rows.push({
+            id: 'jimeng',
+            label: XYQ_CHANNEL_LABELS.jimeng,
+            ok: result.ok,
+            ...(result.totalRemain === undefined ? {} : { totalRemain: result.totalRemain }),
+            ...(result.message === undefined ? {} : { message: result.message }),
+          })
+        }
+      }
+      return rows
+    },
+
     async generateImage(input: {
       prompt: string
       model?: string
@@ -196,7 +397,30 @@ export function createXyqService(deps: XyqServiceDeps) {
       count?: number
       outDir?: string
       sessionKey?: string
+      /** 生成通道：缺省/xyq = 小云雀（老行为），jimeng = 即梦。 */
+      channel?: ChannelId
+      /** 缺 CLI 时自动装（默认 true）；false = 只报告 + 手工命令。 */
+      autoInstall?: boolean
+      /** 未登录时自动发起授权（默认 true）；false = 只报告。 */
+      autoLogin?: boolean
     }): Promise<XyqGenerateResult> {
+      const requested = input.channel ?? 'xyq'
+      const healed = await readyFor(requested, { autoInstall: input.autoInstall ?? false, autoLogin: input.autoLogin ?? true })
+      if (!healed.ok) return { ok: false, message: healed.message }
+      if (requested !== 'xyq') {
+        const picked = await pickChannel(requested)
+        if (picked.channel === undefined) return { ok: false, message: picked.message ?? '通道不可用' }
+        return fromChannel(
+          await picked.channel.generateImage({
+            prompt: input.prompt,
+            ...(input.model === undefined ? {} : { model: input.model }),
+            ...(input.images === undefined ? {} : { images: input.images }),
+            ...(input.ratio === undefined ? {} : { ratio: input.ratio }),
+            ...(input.count === undefined ? {} : { count: input.count }),
+            ...(input.outDir === undefined ? {} : { outDir: input.outDir }),
+          }),
+        )
+      }
       const config = readConfig()
       const sessionKey = input.sessionKey ?? 'default'
       const budget = budgetOf(sessionKey)
@@ -341,7 +565,30 @@ export function createXyqService(deps: XyqServiceDeps) {
       images?: string[]
       outDir?: string
       sessionKey?: string
+      /** 生成通道：缺省/xyq = 小云雀（老行为），jimeng = 即梦。 */
+      channel?: ChannelId
+      /** 缺 CLI 时自动装（默认 true）。 */
+      autoInstall?: boolean
+      /** 未登录时自动发起授权（默认 true）。 */
+      autoLogin?: boolean
     }): Promise<XyqGenerateResult> {
+      const requested = input.channel ?? 'xyq'
+      const healed = await readyFor(requested, { autoInstall: input.autoInstall ?? false, autoLogin: input.autoLogin ?? true })
+      if (!healed.ok) return { ok: false, message: healed.message }
+      if (requested !== 'xyq') {
+        const picked = await pickChannel(requested)
+        if (picked.channel === undefined) return { ok: false, message: picked.message ?? '通道不可用' }
+        return fromChannel(
+          await picked.channel.generateVideo({
+            prompt: input.prompt,
+            ...(input.model === undefined ? {} : { model: input.model }),
+            ...(input.duration === undefined ? {} : { duration: input.duration }),
+            ...(input.ratio === undefined ? {} : { ratio: input.ratio }),
+            ...(input.images === undefined ? {} : { images: input.images }),
+            ...(input.outDir === undefined ? {} : { outDir: input.outDir }),
+          }),
+        )
+      }
       const config = readConfig()
       const sessionKey = input.sessionKey ?? 'default'
       const budget = budgetOf(sessionKey)

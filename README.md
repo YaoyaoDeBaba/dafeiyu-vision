@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 50 条判据
+npm test            # 构建 + 72 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -427,3 +427,45 @@ web_image_gen({ prompt: '一只戴红帽的蓝色小鲸鱼，扁平插画风，�
 
 切技能→打字→发送→认出图→下载落盘（字节一致）/ 窄窗口走菜单 / 找不到入口报错 /
 一张没出报错（带页面尾部）/ 出图但下载全失败报错 / 空提示词拒 / 落盘目录固定。
+
+## 十、双通道：小云雀 / 即梦（0.3.0）
+
+`generate_image` / `generate_video` / `xyq_models` 都多了 `channel` 参数：
+
+| channel | 后端 | 登录 | 适合 |
+|---|---|---|---|
+| `xyq`（**默认**） | `pippit-tool-cli` | 官网取 Access Key 填设置页 | 营销成片、短剧 agent 全流程 |
+| `jimeng` | `jimeng-novel`（一次性命令）/ `dreamina-canvas`（画布） | **浏览器 OAuth**（不需要 Key） | 即梦画布、分镜/导演台、即梦短剧 |
+
+老调用一个字都不用改：不传 `channel` ≡ `channel=xyq`，走的还是原来那段代码。
+
+### 10.1 即梦侧怎么接的
+
+- **二进制按绝对路径 spawn**（安装器不进 PATH）：`<home>/.local/share/jimeng-novel/releases/<版本>/jimeng-novel.exe`、
+  `<home>/bin/dreamina-canvas.exe`；`JIMENG_NOVEL_CLI` / `DREAMINA_CANVAS_CLI` 可覆盖（排障口子）。
+- 走的是一次性命令，与云雀的"提交→轮询→下载"同形，工具层不用写第二套轮询：
+  `generate-image --model … --prompt … --wait N --out <dir>/ -j`、`generate-video …`、`credit get -j`、`model list --type … -j`。
+- 产物落 `<DSH_HOME>/storages/dsh-remote-dafeiyu/jimeng-output/`（与云雀同层）。
+- **登录不进自动流程**：`AUTH_FAILED` 会翻成"在终端跑 `<绝对路径> login --non-interactive`，把授权链接给用户"——
+  工具只给下一步，不替人登录。
+- **不可用只影响这一条通道**：`probe()` 写 `probe.jimeng = available:<path> / unavailable:<原因>`，
+  并留一行中文日志；云雀那条照常注册、照常出片。
+
+### 10.2 工具与指南
+
+- 工具从 4 个变 5 个：`generate_image` / `generate_video` / `xyq_balance`（两条通道各一段）/ `xyq_models` / **`xyq_guide`**。
+- `xyq_guide` 读的就是 `assets/skills/dafeiyu-xyq/SKILL.md`（启动时由 `installBundledSkills` 铺到 `<dshHome>/skills/`），
+  与注入的提示段同一口径：**什么时候选即梦（画布/短剧）、什么时候选云雀（营销/全流程）**、两条通道的计费与登录差异。
+
+### 10.3 判据（`tests/xyq-channel.test.ts`，15 条）
+
+不传 channel 参数不变且绝不碰即梦 / 显式 xyq ≡ 不传 / jimeng 走绝对路径且参数拼装正确 /
+没装只标该通道 unavailable（probe+日志，云雀照常）/ 缺参数与传错 channel 给中文不抛栈 /
+余额两条各一段 / 即梦未登录给可照抄的命令（含绝对路径）/ 定位优先级与版本挑选 /
+工具五个且六个键齐全 / guide 正文与兜底 / 多余参数显形（ignored）。
+
+### 10.4 现状与已知
+
+- **即梦已装未登录**：`credit get` 返回 `AUTH_FAILED`（实测），工具会给出 login 命令；登录后第一次真实出图要复核
+  `data` 里产物字段名（当前是防御式解析：扫 JSON 里带媒体后缀的字符串）。
+- **设置页 / `/xyq/*` 路由还没有通道开关**：这一版只让 agent 侧能选 channel，手机与面板仍走云雀（下一版再开）。

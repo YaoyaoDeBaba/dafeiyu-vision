@@ -183,16 +183,16 @@ function promptOf(config, image) {
   const custom = typeof image.prompt === "string" ? image.prompt.trim() : "";
   return custom !== "" ? custom : config.prompt;
 }
-function deepGet(value, path11) {
+function deepGet(value, path15) {
   let cursor = value;
-  for (const key of path11) {
+  for (const key of path15) {
     if (cursor === null || typeof cursor !== "object") return void 0;
     cursor = cursor[key];
   }
   return cursor;
 }
-function splitPath(path11) {
-  return String(path11 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
+function splitPath(path15) {
+  return String(path15 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
 }
 function textFrom(value) {
   if (typeof value === "string") return value.trim();
@@ -918,8 +918,8 @@ async function launchCdpBrowser(options) {
       try {
         const shot = await call("Page.captureScreenshot", { format: "png" }, 15e3);
         if (shot?.data) {
-          const fs7 = await import("node:fs");
-          fs7.writeFileSync(file, Buffer.from(shot.data, "base64"));
+          const fs9 = await import("node:fs");
+          fs9.writeFileSync(file, Buffer.from(shot.data, "base64"));
         }
       } catch {
       }
@@ -2271,7 +2271,7 @@ function startVision(ctx, deps) {
 }
 
 // src/xyq/start.ts
-import path10 from "node:path";
+import path14 from "node:path";
 
 // src/xyq/config.ts
 import fs5 from "node:fs";
@@ -2355,6 +2355,31 @@ function viewXyqConfig(config) {
     budget: config.budget,
     freedom: config.freedom
   };
+}
+
+// src/xyq/channel.ts
+var XYQ_CHANNEL_IDS = ["xyq", "jimeng"];
+var XYQ_CHANNEL_LABELS = {
+  xyq: "\u5C0F\u4E91\u96C0",
+  jimeng: "\u5373\u68A6"
+};
+function isChannelId(value) {
+  return typeof value === "string" && XYQ_CHANNEL_IDS.includes(value);
+}
+function normalizeChannelId(value) {
+  if (value === void 0 || value === null) return "xyq";
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  if (trimmed === "") return "xyq";
+  return isChannelId(trimmed) ? trimmed : void 0;
+}
+function channelParamError(value) {
+  return `channel \u53EA\u80FD\u662F ${XYQ_CHANNEL_IDS.join(" / ")}\uFF08\u9ED8\u8BA4 xyq\uFF09\uFF0C\u6536\u5230\u7684\u662F\u300C${String(value)}\u300D`;
+}
+function unavailableMessage(probe) {
+  if (probe.available) return "";
+  const hint = probe.hint !== void 0 && probe.hint !== "" ? ` \u4E0B\u4E00\u6B65\uFF1A${probe.hint}` : "";
+  return `${probe.label}\u901A\u9053\u4E0D\u53EF\u7528\uFF1A${probe.reason}${hint}`;
 }
 
 // src/xyq/service.ts
@@ -2457,6 +2482,79 @@ ${result.stderr}`;
       await sleep(pollInterval);
     }
   }
+  function fromChannel(result) {
+    return {
+      ok: result.ok,
+      ...result.message === void 0 ? {} : { message: result.message },
+      ...result.files === void 0 ? {} : { files: result.files },
+      ...result.webLink === void 0 ? {} : { webLink: result.webLink }
+    };
+  }
+  async function pickChannel(id) {
+    if (id === "xyq") return {};
+    const channel = deps.channels?.[id];
+    if (channel === void 0) return { message: `\u6CA1\u6709\u63A5\u5165\u300C${XYQ_CHANNEL_LABELS[id] ?? id}\u300D\u901A\u9053\uFF08\u53EA\u6302\u4E86\u4E91\u96C0\uFF09` };
+    const status = await channel.probe();
+    if (!status.available) return { message: unavailableMessage(status) };
+    return { channel };
+  }
+  async function preflightXyq(options) {
+    const config = readConfig();
+    if (!config.enabled) {
+      return { ok: false, message: "\u5C0F\u4E91\u96C0\u80FD\u529B\u5DF2\u5173\u95ED\uFF08\u8BBE\u7F6E\u9875 \u2192 \u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\uFF09\u3002\u8981\u7528\u5C31\u5148\u628A\u5F00\u5173\u6253\u5F00\u3002" };
+    }
+    const cli = await deps.resolveCli();
+    if (cli === void 0) {
+      deps.log("\u5C0F\u4E91\u96C0 CLI \u6CA1\u627E\u5230\uFF0C\u81EA\u52A8\u5B89\u88C5\u4E5F\u6CA1\u6210\u529F\uFF08\u8FDC\u63A7/\u8BC6\u56FE\u4E0D\u53D7\u5F71\u54CD\uFF09", { autoInstall: options.autoInstall ?? true });
+      return {
+        ok: false,
+        message: "\u6CA1\u627E\u5230 pippit-tool-cli\uFF0C\u81EA\u52A8\u5B89\u88C5\u4E5F\u5931\u8D25\u4E86\u3002\u624B\u5DE5\u5B89\u88C5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300Cnpx @pippit-dev/cli@latest install\u300D\uFF0C\u88C5\u5B8C\u518D\u8BD5\u4E00\u6B21\u3002"
+      };
+    }
+    if (config.accessKey === "") {
+      return {
+        ok: false,
+        message: [
+          "\u5C0F\u4E91\u96C0\u8FD8\u6CA1\u586B Access Key\u3002\u4EFB\u9009\u4E00\u5904\u586B\uFF08\u4E09\u5904\u7B49\u4EF7\uFF09\uFF1A",
+          "\u2460 \u8BBE\u7F6E\u9875 \u2192\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u2192 Access Key \u4E00\u680F\uFF1B",
+          `\u2461 \u6216\u76F4\u63A5\u6539\u914D\u7F6E\u6587\u4EF6 ${deps.configFile} \u7684 accessKey \u5B57\u6BB5\uFF08\u6539\u5B8C\u91CD\u542F\u5BBF\u4E3B\uFF09\uFF1B`,
+          "\u2462 \u6216\u8BBE\u73AF\u5883\u53D8\u91CF XYQ_ACCESS_KEY\uFF08\u63D2\u4EF6\u5C31\u662F\u628A\u5B83\u4F5C\u4E3A\u73AF\u5883\u53D8\u91CF\u4EA4\u7ED9 CLI \u7684\uFF09\u3002",
+          "Key \u5728\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u91CC\u5EFA\u3002"
+        ].join("\n")
+      };
+    }
+    const answered = await call(["status"], 2e4);
+    if (answered.message !== void 0) return { ok: true };
+    const json3 = answered.json ?? {};
+    if (json3.logged_in === false) {
+      return {
+        ok: false,
+        message: [
+          "\u5C0F\u4E91\u96C0 Access Key \u6CA1\u751F\u6548\uFF08\u8FC7\u671F\u6216\u65E0\u6548\uFF09\u3002",
+          "\u53BB\u5C0F\u4E91\u96C0\u5B98\u7F51 \u2192 \u26A1CLI/API \u2192 API \u2192 \u7BA1\u7406 Access Key \u66F4\u65B0\uFF0C\u7136\u540E\u586B\u5230\u8BBE\u7F6E\u9875\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\uFF0C",
+          `\u6216\u6539\u914D\u7F6E\u6587\u4EF6 ${deps.configFile} \u7684 accessKey\uFF0C\u6216\u8BBE\u73AF\u5883\u53D8\u91CF XYQ_ACCESS_KEY\u3002`
+        ].join(""),
+        needsUser: true
+      };
+    }
+    return { ok: true };
+  }
+  async function healChannel(channel, options) {
+    if (typeof channel.preflight !== "function") return { ok: true };
+    try {
+      return await channel.preflight(options);
+    } catch (error) {
+      return { ok: false, message: `\u901A\u9053\u81EA\u6108\u65F6\u51FA\u9519\uFF1A${String(error?.message ?? error).slice(0, 200)}` };
+    }
+  }
+  async function readyFor(id, options) {
+    if (id === "xyq") return preflightXyq(options);
+    const channel = deps.channels?.[id];
+    if (channel === void 0) {
+      return { ok: false, message: `\u6CA1\u6709\u63A5\u5165\u300C${XYQ_CHANNEL_LABELS[id] ?? id}\u300D\u901A\u9053\uFF08\u53EA\u6302\u4E86\u4E91\u96C0\uFF09` };
+    }
+    return healChannel(channel, options);
+  }
   return {
     config: readConfig,
     view: () => viewXyqConfig(readConfig()),
@@ -2472,13 +2570,27 @@ ${result.stderr}`;
         ...json3.logged_in === true ? {} : { message: "Access Key \u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u662F\u5426\u8FC7\u671F" }
       };
     },
-    async balance() {
+    async balance(channel = "xyq", options = {}) {
+      const healed = await readyFor(channel, options);
+      if (!healed.ok) return { ok: false, message: healed.message };
+      if (channel !== "xyq") {
+        const picked = await pickChannel(channel);
+        if (picked.channel === void 0) return { ok: false, message: picked.message ?? "\u901A\u9053\u4E0D\u53EF\u7528" };
+        return picked.channel.balance();
+      }
       const answered = await call(["get-credit-balance"], 3e4);
       if (answered.message !== void 0) return { ok: false, message: answered.message };
       const json3 = answered.json ?? {};
       return { ok: true, totalRemain: typeof json3.total_remain_amount === "string" ? json3.total_remain_amount : String(json3.total_remain_amount ?? "") };
     },
-    async models(kind) {
+    async models(kind, channel = "xyq", options = {}) {
+      const healed = await readyFor(channel, options);
+      if (!healed.ok) return { ok: false, message: healed.message };
+      if (channel !== "xyq") {
+        const picked = await pickChannel(channel);
+        if (picked.channel === void 0) return { ok: false, message: picked.message ?? "\u901A\u9053\u4E0D\u53EF\u7528" };
+        return picked.channel.models(kind);
+      }
       const answered = await call(["model", "list", "--type", kind], 6e4);
       if (answered.message !== void 0) return { ok: false, message: answered.message };
       const json3 = answered.json ?? {};
@@ -2492,7 +2604,90 @@ ${result.stderr}`;
         }))
       };
     },
+    /** 通道探测：只看「装没装」（登录态在真正调用时才查，探测不许拖慢启动）。 */
+    async channelProbes() {
+      const rows = [];
+      for (const id of ["xyq", "jimeng"]) {
+        if (id === "xyq") {
+          const cli = await deps.resolveCli();
+          rows.push(
+            cli === void 0 ? {
+              id,
+              label: XYQ_CHANNEL_LABELS[id],
+              available: false,
+              reason: "\u6CA1\u627E\u5230 pippit-tool-cli",
+              hint: "\u5728\u7EC8\u7AEF\u8DD1\u300Cnpx @pippit-dev/cli@latest install\u300D"
+            } : { id, label: XYQ_CHANNEL_LABELS[id], available: true, cliPath: cli }
+          );
+          continue;
+        }
+        const channel = deps.channels?.[id];
+        if (channel === void 0) {
+          rows.push({ id, label: XYQ_CHANNEL_LABELS[id], available: false, reason: "\u6CA1\u6709\u63A5\u5165\u8FD9\u6761\u901A\u9053" });
+          continue;
+        }
+        rows.push(await channel.probe());
+      }
+      return rows;
+    },
+    /** 余额工具用：两条通道各报一段（一条不可用不影响另一条；同样先过自愈）。 */
+    async balanceAll(options = {}) {
+      const rows = [];
+      const xyqReady = await readyFor("xyq", options);
+      if (!xyqReady.ok) {
+        rows.push({ id: "xyq", label: XYQ_CHANNEL_LABELS.xyq, ok: false, message: xyqReady.message });
+      } else {
+        const xyqAnswer = await call(["get-credit-balance"], 3e4);
+        if (xyqAnswer.message !== void 0) {
+          rows.push({ id: "xyq", label: XYQ_CHANNEL_LABELS.xyq, ok: false, message: xyqAnswer.message });
+        } else {
+          const json3 = xyqAnswer.json ?? {};
+          rows.push({
+            id: "xyq",
+            label: XYQ_CHANNEL_LABELS.xyq,
+            ok: true,
+            totalRemain: typeof json3.total_remain_amount === "string" ? json3.total_remain_amount : String(json3.total_remain_amount ?? "")
+          });
+        }
+      }
+      const jimengReady = await readyFor("jimeng", options);
+      if (!jimengReady.ok) {
+        rows.push({ id: "jimeng", label: XYQ_CHANNEL_LABELS.jimeng, ok: false, message: jimengReady.message });
+      } else {
+        const picked = await pickChannel("jimeng");
+        if (picked.channel === void 0) {
+          rows.push({ id: "jimeng", label: XYQ_CHANNEL_LABELS.jimeng, ok: false, message: picked.message ?? "\u901A\u9053\u4E0D\u53EF\u7528" });
+        } else {
+          const result = await picked.channel.balance();
+          rows.push({
+            id: "jimeng",
+            label: XYQ_CHANNEL_LABELS.jimeng,
+            ok: result.ok,
+            ...result.totalRemain === void 0 ? {} : { totalRemain: result.totalRemain },
+            ...result.message === void 0 ? {} : { message: result.message }
+          });
+        }
+      }
+      return rows;
+    },
     async generateImage(input) {
+      const requested = input.channel ?? "xyq";
+      const healed = await readyFor(requested, { autoInstall: input.autoInstall ?? false, autoLogin: input.autoLogin ?? true });
+      if (!healed.ok) return { ok: false, message: healed.message };
+      if (requested !== "xyq") {
+        const picked = await pickChannel(requested);
+        if (picked.channel === void 0) return { ok: false, message: picked.message ?? "\u901A\u9053\u4E0D\u53EF\u7528" };
+        return fromChannel(
+          await picked.channel.generateImage({
+            prompt: input.prompt,
+            ...input.model === void 0 ? {} : { model: input.model },
+            ...input.images === void 0 ? {} : { images: input.images },
+            ...input.ratio === void 0 ? {} : { ratio: input.ratio },
+            ...input.count === void 0 ? {} : { count: input.count },
+            ...input.outDir === void 0 ? {} : { outDir: input.outDir }
+          })
+        );
+      }
       const config = readConfig();
       const sessionKey = input.sessionKey ?? "default";
       const budget = budgetOf(sessionKey);
@@ -2604,6 +2799,23 @@ ${result.stderr}`;
       return { ok: true, model };
     },
     async generateVideo(input) {
+      const requested = input.channel ?? "xyq";
+      const healed = await readyFor(requested, { autoInstall: input.autoInstall ?? false, autoLogin: input.autoLogin ?? true });
+      if (!healed.ok) return { ok: false, message: healed.message };
+      if (requested !== "xyq") {
+        const picked = await pickChannel(requested);
+        if (picked.channel === void 0) return { ok: false, message: picked.message ?? "\u901A\u9053\u4E0D\u53EF\u7528" };
+        return fromChannel(
+          await picked.channel.generateVideo({
+            prompt: input.prompt,
+            ...input.model === void 0 ? {} : { model: input.model },
+            ...input.duration === void 0 ? {} : { duration: input.duration },
+            ...input.ratio === void 0 ? {} : { ratio: input.ratio },
+            ...input.images === void 0 ? {} : { images: input.images },
+            ...input.outDir === void 0 ? {} : { outDir: input.outDir }
+          })
+        );
+      }
       const config = readConfig();
       const sessionKey = input.sessionKey ?? "default";
       const budget = budgetOf(sessionKey);
@@ -2823,14 +3035,14 @@ function xyqFileHandler(deps) {
     const url = new URL(request.url ?? "/", "http://localhost");
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
-    const path11 = await import("node:path");
-    const fs7 = await import("node:fs");
-    const resolved = path11.resolve(target);
-    const root = path11.resolve(deps.outDir);
-    if (!resolved.startsWith(root + path11.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
+    const path15 = await import("node:path");
+    const fs9 = await import("node:fs");
+    const resolved = path15.resolve(target);
+    const root = path15.resolve(deps.outDir);
+    if (!resolved.startsWith(root + path15.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
-      const data = fs7.readFileSync(resolved);
-      const ext = path11.extname(resolved).toLowerCase();
+      const data = fs9.readFileSync(resolved);
+      const ext = path15.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
       if (request.method === "HEAD") response.end();
@@ -2841,7 +3053,56 @@ function xyqFileHandler(deps) {
   };
 }
 
+// src/xyq/skill.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+import path9 from "node:path";
+var XYQ_SKILL_NAME = "dafeiyu-xyq";
+var XYQ_GUIDE_FALLBACK = [
+  "# \u751F\u6210\u901A\u9053\uFF1A\u5C0F\u4E91\u96C0 vs \u5373\u68A6",
+  "",
+  "`generate_image` / `generate_video` / `xyq_models` \u90FD\u6709 `channel` \u53C2\u6570\uFF1A",
+  "- `channel=xyq`\uFF08\u9ED8\u8BA4\uFF09\uFF1A\u5C0F\u4E91\u96C0\uFF0C\u8981 Access Key\uFF0C\u8425\u9500\u6210\u7247/\u77ED\u5267\u5168\u6D41\u7A0B\uFF1B",
+  "- `channel=jimeng`\uFF1A\u5373\u68A6\uFF0C\u6D4F\u89C8\u5668 OAuth \u767B\u5F55\uFF08\u4E0D\u7528 Key\uFF09\uFF0C\u753B\u5E03/\u5206\u955C/\u5373\u68A6\u77ED\u5267\u3002",
+  "\u4E0D\u4F20\u5C31\u662F xyq\uFF1B\u7528\u6237\u6CA1\u70B9\u540D\u522B\u81EA\u4F5C\u4E3B\u5F20\u5207\u901A\u9053\u3002\u6A21\u578B\u540D\u4E24\u6761\u901A\u9053\u4E0D\u901A\u7528\uFF0C\u5148 `xyq_models` \u518D\u751F\u6210\u3002",
+  "\u5373\u68A6\u6CA1\u88C5/\u6CA1\u767B\u5F55\u65F6\u5DE5\u5177\u4F1A\u8FD4\u56DE\u4E2D\u6587\u539F\u56E0 + \u4E0B\u4E00\u6B65\u547D\u4EE4\uFF08\u542B\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF0C\u7167\u6284\u7ED9\u7528\u6237\u3002"
+].join("\n");
+function stripFrontmatter2(raw) {
+  return raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+}
+var cachedBody2;
+function readXyqSkillBody(assetsRoot) {
+  if (cachedBody2 !== void 0) return cachedBody2;
+  try {
+    cachedBody2 = stripFrontmatter2(readFileSync3(path9.join(assetsRoot, "SKILL.md"), "utf8"));
+  } catch {
+    cachedBody2 = XYQ_GUIDE_FALLBACK;
+  }
+  return cachedBody2;
+}
+
 // src/xyq/tools.ts
+var CHANNEL_ENUM = [...XYQ_CHANNEL_IDS];
+function ignoredKeys2(args, known) {
+  return Object.keys(args ?? {}).filter((key) => !known.includes(key));
+}
+function withIgnored(text, ignored) {
+  return ignored.length === 0 ? text : `${text}
+\uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
+}
+function channelOf(args) {
+  const channel = normalizeChannelId(args.channel);
+  if (channel === void 0) throw new Error(channelParamError(args.channel));
+  return channel;
+}
+function selfHealOf(args) {
+  const off = (value) => value === false || value === "false";
+  const on = (value) => value === true || value === "true";
+  return { autoInstall: on(args.autoInstall), autoLogin: !off(args.autoLogin) };
+}
+var SELF_HEAL_PARAMS = {
+  autoInstall: { type: "boolean", description: "\u7F3A CLI \u65F6\u662F\u5426\u81EA\u52A8\u4E0B\u8F7D\u5E76\u5B89\u88C5\uFF08\u9ED8\u8BA4 false\uFF0C\u4E0D\u81EA\u52A8\u6267\u884C\u8FDC\u7AEF\u811A\u672C\uFF09\uFF1B\u7F3A CLI \u65F6\u4F20 true \u8BA9\u63D2\u4EF6\u88C5\u4E00\u6B21" },
+  autoLogin: { type: "boolean", description: "\u672A\u767B\u5F55\u65F6\u662F\u5426\u81EA\u52A8\u53D1\u8D77\u6388\u6743\uFF08\u9ED8\u8BA4 true\uFF09\uFF1B\u4F20 false \u53EA\u62A5\u544A" }
+};
 function sessionKeyOf(exec) {
   const record = exec && typeof exec === "object" ? exec : void 0;
   const agent = record?.agent && typeof record.agent === "object" ? record.agent : void 0;
@@ -2857,11 +3118,11 @@ function resultText(result) {
   if (result.threadId !== void 0) lines.push(`\u4EFB\u52A1\uFF1A${result.threadId}`);
   return lines.join("\n");
 }
-function xyqTools(service) {
+function xyqTools(service, deps = {}) {
   return [
     {
       name: "generate_image",
-      description: "\u7528\u5C0F\u4E91\u96C0\u751F\u6210/\u7F16\u8F91\u56FE\u7247\u3002prompt \u5FC5\u987B\u662F\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF1B\u53EF\u4F20\u53C2\u8003\u56FE\uFF08\u672C\u5730\u7EDD\u5BF9\u8DEF\u5F84\uFF09\u3002\u6309\u5F20\u6D88\u8017\u79EF\u5206\u3002\u7528\u6237\u6CA1\u6709\u660E\u786E\u8981\u6C42\u753B\u56FE\u65F6\u4E0D\u8981\u8C03\u7528\u3002",
+      description: "\u751F\u6210/\u7F16\u8F91\u56FE\u7247\u3002prompt \u5FC5\u987B\u662F\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF1B\u53EF\u4F20\u53C2\u8003\u56FE\uFF08\u672C\u5730\u7EDD\u5BF9\u8DEF\u5F84\uFF09\u3002\u6309\u5F20\u6D88\u8017\u79EF\u5206\u3002\u7528\u6237\u6CA1\u6709\u660E\u786E\u8981\u6C42\u753B\u56FE\u65F6\u4E0D\u8981\u8C03\u7528\u3002\u901A\u9053\uFF1Achannel=xyq\uFF08\u9ED8\u8BA4\uFF0C\u5C0F\u4E91\u96C0\uFF0C\u8425\u9500\u6210\u7247/\u77ED\u5267 agent \u5168\u6D41\u7A0B\uFF09\u6216 channel=jimeng\uFF08\u5373\u68A6\uFF0C\u753B\u5E03/\u77ED\u5267 CLI\uFF09\u3002\u5373\u68A6\u901A\u9053\u9700\u8981\u672C\u673A\u5DF2\u88C5\u5373\u68A6 CLI \u4E14\u5728\u6D4F\u89C8\u5668\u91CC\u6388\u6743\u8FC7\uFF1B\u4E0D\u53EF\u7528\u65F6\u5DE5\u5177\u4F1A\u62A5\u4E2D\u6587\u539F\u56E0\u4E0E\u4E0B\u4E00\u6B65\u547D\u4EE4\u3002",
       parameters: {
         type: "object",
         properties: {
@@ -2870,18 +3131,26 @@ function xyqTools(service) {
           images: { type: "array", items: { type: "string" }, description: "\u53C2\u8003\u56FE\u672C\u5730\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u53EF\u591A\u5F20" },
           ratio: { type: "string", description: "\u6BD4\u4F8B\uFF08\u6A21\u578B\u8FD4\u56DE\u7684\u6570\u5B57\u679A\u4E3E\uFF0C\u5982 3 \u8868\u793A 9:16\uFF09" },
           count: { type: "number", description: "\u751F\u6210\u6570\u91CF\uFF08\u53EF\u9009\uFF09" },
-          outDir: { type: "string", description: "\u4E0B\u8F7D\u76EE\u5F55\uFF1B\u9ED8\u8BA4 xyq_output" }
+          outDir: { type: "string", description: "\u4E0B\u8F7D\u76EE\u5F55\uFF1B\u9ED8\u8BA4 xyq_output" },
+          channel: { type: "string", enum: CHANNEL_ENUM, description: "\u751F\u6210\u901A\u9053\uFF1Axyq=\u5C0F\u4E91\u96C0\uFF08\u9ED8\u8BA4\uFF09\uFF0Cjimeng=\u5373\u68A6" },
+          ...SELF_HEAL_PARAMS
         },
         required: ["prompt"]
       },
       output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
-      timeoutMs: 10 * 6e4,
+      timeoutMs: 15 * 6e4,
       async execute(args, exec) {
         const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
         if (prompt === "") throw new Error("\u9700\u8981 prompt\uFF08\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF09");
+        const channel = channelOf(args);
+        const ignored = ignoredKeys2(args, ["prompt", "model", "images", "ratio", "count", "outDir", "channel", "autoInstall", "autoLogin"]);
+        const heal = selfHealOf(args);
         const images = Array.isArray(args.images) ? args.images.filter((value) => typeof value === "string" && value !== "") : [];
         const result = await service.generateImage({
           prompt,
+          channel,
+          autoInstall: heal.autoInstall,
+          autoLogin: heal.autoLogin,
           ...typeof args.model === "string" && args.model !== "" ? { model: args.model } : {},
           images,
           ...typeof args.ratio === "string" && args.ratio !== "" ? { ratio: args.ratio } : {},
@@ -2890,12 +3159,12 @@ function xyqTools(service) {
           sessionKey: sessionKeyOf(exec)
         });
         if (!result.ok) throw new Error(result.message ?? "\u751F\u6210\u5931\u8D25");
-        return resultText(result);
+        return withIgnored(resultText(result), ignored);
       }
     },
     {
       name: "generate_video",
-      description: "\u7528\u5C0F\u4E91\u96C0\u751F\u6210\u89C6\u9891\uFF08\u652F\u6301\u53C2\u8003\u56FE/\u9996\u5C3E\u5E27\uFF09\u3002\u6309\u65F6\u957F\u8BA1\u8D39\uFF08Seedance 2.0 Mini \u4F53\u9A8C\u7248\u7EA6 4 \u79EF\u5206/\u79D2\uFF09\u3002\u7528\u6237\u6CA1\u6709\u660E\u786E\u8981\u6C42\u751F\u6210\u89C6\u9891\u65F6\u4E0D\u8981\u8C03\u7528\uFF1B\u65F6\u957F\u4F1A\u88AB\u8BBE\u7F6E\u91CC\u7684\u4E0A\u9650\u622A\u65AD\u3002",
+      description: "\u751F\u6210\u89C6\u9891\uFF08\u652F\u6301\u53C2\u8003\u56FE/\u9996\u5C3E\u5E27\uFF09\u3002\u6309\u65F6\u957F\u8BA1\u8D39\uFF08\u4E91\u96C0 Seedance 2.0 Mini \u4F53\u9A8C\u7248\u7EA6 4 \u79EF\u5206/\u79D2\uFF09\u3002\u7528\u6237\u6CA1\u6709\u660E\u786E\u8981\u6C42\u751F\u6210\u89C6\u9891\u65F6\u4E0D\u8981\u8C03\u7528\uFF1B\u4E91\u96C0\u901A\u9053\u4E0B\u65F6\u957F\u4F1A\u88AB\u8BBE\u7F6E\u91CC\u7684\u4E0A\u9650\u622A\u65AD\u3002\u901A\u9053\uFF1Achannel=xyq\uFF08\u9ED8\u8BA4\uFF09\u6216 channel=jimeng\uFF08\u5373\u68A6\uFF0C\u77ED\u5267/\u753B\u5E03\uFF0C\u6309\u79D2\u6263\u79EF\u5206\u3001\u9700\u8981\u6D4F\u89C8\u5668\u6388\u6743\uFF09\u3002",
       parameters: {
         type: "object",
         properties: {
@@ -2904,18 +3173,25 @@ function xyqTools(service) {
           duration: { type: "number", description: "\u65F6\u957F\uFF08\u79D2\uFF0C4~30\uFF0C\u4F1A\u88AB\u8BBE\u7F6E\u4E0A\u9650\u622A\u65AD\uFF09" },
           ratio: { type: "string", description: "\u6BD4\u4F8B\uFF0C\u5982 1:1 / 16:9 / 9:16" },
           images: { type: "array", items: { type: "string" }, description: "\u53C2\u8003\u56FE\u672C\u5730\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u53EF\u591A\u5F20" },
-          outDir: { type: "string", description: "\u4E0B\u8F7D\u76EE\u5F55\uFF1B\u9ED8\u8BA4 xyq_output" }
+          outDir: { type: "string", description: "\u4E0B\u8F7D\u76EE\u5F55\uFF1B\u9ED8\u8BA4 xyq_output" },
+          channel: { type: "string", enum: CHANNEL_ENUM, description: "\u751F\u6210\u901A\u9053\uFF1Axyq=\u5C0F\u4E91\u96C0\uFF08\u9ED8\u8BA4\uFF09\uFF0Cjimeng=\u5373\u68A6" },
+          ...SELF_HEAL_PARAMS
         },
         required: ["prompt"]
       },
       output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
-      timeoutMs: 20 * 6e4,
+      timeoutMs: 25 * 6e4,
       async execute(args, exec) {
         const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
         if (prompt === "") throw new Error("\u9700\u8981 prompt\uFF08\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF09");
+        const ignored = ignoredKeys2(args, ["prompt", "model", "duration", "ratio", "images", "outDir", "channel", "autoInstall", "autoLogin"]);
+        const heal = selfHealOf(args);
         const images = Array.isArray(args.images) ? args.images.filter((value) => typeof value === "string" && value !== "") : [];
         const result = await service.generateVideo({
           prompt,
+          channel: channelOf(args),
+          autoInstall: heal.autoInstall,
+          autoLogin: heal.autoLogin,
           ...typeof args.model === "string" && args.model !== "" ? { model: args.model } : {},
           ...typeof args.duration === "number" ? { duration: args.duration } : {},
           ...typeof args.ratio === "string" && args.ratio !== "" ? { ratio: args.ratio } : {},
@@ -2924,37 +3200,59 @@ function xyqTools(service) {
           sessionKey: sessionKeyOf(exec)
         });
         if (!result.ok) throw new Error(result.message ?? "\u751F\u6210\u5931\u8D25");
-        return resultText(result);
+        return withIgnored(resultText(result), ignored);
       }
     },
     {
       name: "xyq_balance",
-      description: "\u67E5\u8BE2\u5C0F\u4E91\u96C0\u8D26\u6237\u5269\u4F59\u79EF\u5206\u3002\u751F\u6210\u524D\u5148\u67E5\uFF0C\u907F\u514D\u4F59\u989D\u4E0D\u8DB3\u3002",
-      parameters: { type: "object", properties: {} },
+      description: "\u67E5\u8BE2\u751F\u6210\u989D\u5EA6\uFF1A\u4E24\u6761\u901A\u9053\u5404\u62A5\u4E00\u6BB5\uFF08\u5C0F\u4E91\u96C0\u79EF\u5206 / \u5373\u68A6\u79EF\u5206\uFF09\u3002\u751F\u6210\u524D\u5148\u67E5\uFF0C\u907F\u514D\u4F59\u989D\u4E0D\u8DB3\uFF1B\u67D0\u4E00\u6761\u4E0D\u53EF\u7528\u53EA\u5F71\u54CD\u5B83\u81EA\u5DF1\uFF08\u4F1A\u5199\u660E\u539F\u56E0\u4E0E\u4E0B\u4E00\u6B65\uFF09\u3002",
+      parameters: { type: "object", properties: { ...SELF_HEAL_PARAMS } },
       output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
-      timeoutMs: 6e4,
-      async execute() {
-        const result = await service.balance();
-        if (!result.ok) throw new Error(result.message ?? "\u67E5\u8BE2\u4F59\u989D\u5931\u8D25");
-        return `\u5C0F\u4E91\u96C0\u5269\u4F59\u79EF\u5206\uFF1A${result.totalRemain ?? "\u672A\u77E5"}`;
+      timeoutMs: 18e4,
+      async execute(args) {
+        const rows = await service.balanceAll(selfHealOf(args));
+        const lines = rows.map(
+          (row) => row.ok ? `- ${row.label}\uFF1A\u5269\u4F59 ${row.totalRemain ?? "\u672A\u77E5"}` : `- ${row.label}\uFF1A${row.message ?? "\u67E5\u8BE2\u5931\u8D25"}`
+        );
+        return ["\u751F\u6210\u989D\u5EA6\uFF08\u6309\u901A\u9053\uFF09\uFF1A", ...lines].join("\n");
       }
     },
     {
       name: "xyq_models",
-      description: "\u67E5\u8BE2\u5C0F\u4E91\u96C0\u53EF\u7528\u6A21\u578B\uFF08type=video \u6216 image\uFF09\u3002\u751F\u56FE/\u751F\u89C6\u9891\u524D\u7528\u5B83\u786E\u8BA4\u6A21\u578B\u540D\u3002",
+      description: "\u67E5\u8BE2\u53EF\u7528\u6A21\u578B\uFF08type=video \u6216 image\uFF09\u3002\u751F\u56FE/\u751F\u89C6\u9891\u524D\u7528\u5B83\u786E\u8BA4\u6A21\u578B\u540D\uFF08\u4E24\u6761\u901A\u9053\u7684\u6A21\u578B\u540D\u4E0D\u901A\u7528\uFF0C\u5148\u5B9A\u901A\u9053\u518D\u67E5\uFF09\u3002",
       parameters: {
         type: "object",
-        properties: { type: { type: "string", enum: ["video", "image"], description: "\u6A21\u578B\u7C7B\u578B" } },
+        properties: {
+          type: { type: "string", enum: ["video", "image"], description: "\u6A21\u578B\u7C7B\u578B" },
+          channel: { type: "string", enum: CHANNEL_ENUM, description: "\u901A\u9053\uFF1Axyq=\u5C0F\u4E91\u96C0\uFF08\u9ED8\u8BA4\uFF09\uFF0Cjimeng=\u5373\u68A6" },
+          ...SELF_HEAL_PARAMS
+        },
         required: ["type"]
       },
       output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
       timeoutMs: 9e4,
       async execute(args) {
         const kind = args.type === "image" ? "image" : "video";
-        const result = await service.models(kind);
+        const ignored = ignoredKeys2(args, ["type", "channel", "autoInstall", "autoLogin"]);
+        const result = await service.models(kind, channelOf(args), selfHealOf(args));
         if (!result.ok) throw new Error(result.message ?? "\u67E5\u8BE2\u6A21\u578B\u5931\u8D25");
         const list = result.models ?? [];
-        return list.length === 0 ? "\uFF08\u6CA1\u6709\u67E5\u5230\u6A21\u578B\uFF09" : list.map((model) => `- ${model.name}\uFF08${model.key}\uFF09`).join("\n");
+        const body = list.length === 0 ? "\uFF08\u6CA1\u6709\u67E5\u5230\u6A21\u578B\uFF09" : list.map((model) => `- ${model.name}\uFF08${model.key}\uFF09`).join("\n");
+        return withIgnored(body, ignored);
+      }
+    },
+    {
+      /**
+       * 指南兜底（契约要求每个域留一个 `<域>_guide`）：与 skill `dafeiyu-xyq` 同一份正文。
+       * 模型没加载到 skill 时，一次工具调用就能拿到「什么时候选哪条通道」的口径。
+       */
+      name: "xyq_guide",
+      description: "\u8FD4\u56DE\u300C\u751F\u6210\u901A\u9053\u300D\u4F7F\u7528\u6307\u5357\uFF08\u4E0E skill `dafeiyu-xyq` \u540C\u4E00\u4EFD\u6B63\u6587\uFF09\uFF1A\u4E24\u6761\u901A\u9053\uFF08xyq \u5C0F\u4E91\u96C0 / jimeng \u5373\u68A6\uFF09\u600E\u4E48\u9009\u3001\u8BA1\u8D39\u4E0E\u767B\u5F55\u5DEE\u5F02\u3001\u4E0D\u53EF\u7528\u65F6\u600E\u4E48\u8BFB\u9519\u8BEF\u3001\u6A21\u578B\u540D\u4E3A\u4EC0\u4E48\u4E0D\u901A\u7528\u3002\u4E0A\u4E0B\u6587\u91CC\u6CA1\u6709\u8BE5 skill \u65F6\u7528\u5B83\u515C\u5E95\u3002",
+      parameters: { type: "object", properties: {} },
+      output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
+      timeoutMs: 15e3,
+      async execute() {
+        return deps.guideBody ? deps.guideBody() : XYQ_GUIDE_FALLBACK;
       }
     }
   ];
@@ -2964,7 +3262,7 @@ function xyqTools(service) {
 import { spawn as spawn2 } from "node:child_process";
 import fs6 from "node:fs";
 import os2 from "node:os";
-import path9 from "node:path";
+import path10 from "node:path";
 function platformDir() {
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   if (process.platform === "win32") return `win32-${arch}`;
@@ -2975,14 +3273,14 @@ function binaryName() {
   return process.platform === "win32" ? "pippit-tool-cli.exe" : "pippit-tool-cli";
 }
 function cachedCliCandidates(home = os2.homedir()) {
-  const base = path9.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
+  const base = path10.join(home, ".cache", "pippit-tool-cli", "xyq-skill", platformDir(), "current");
   return [
-    path9.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
-    path9.join(base, "node_modules", ".bin", binaryName())
+    path10.join(base, "node_modules", "@pippit-dev", "cli", "bin", binaryName()),
+    path10.join(base, "node_modules", ".bin", binaryName())
   ];
 }
 function ensureCliScript(home = os2.homedir()) {
-  return path9.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
+  return path10.join(home, ".agents", "skills", "xyq-skill", "scripts", "ensure-cli.js");
 }
 var defaultCliRunner = (args, options) => new Promise((resolve) => {
   const child = spawn2(cliPathForRun(args), args.slice(1), {
@@ -3044,39 +3342,596 @@ async function resolveCliPath(run, options = {}) {
   }
   const installed = await installCli(run, { home });
   if (installed !== void 0 && fs6.existsSync(installed)) {
-    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path9.basename(installed) });
+    options.log?.("\u5C0F\u4E91\u96C0 CLI \u5DF2\u5B89\u88C5", { path: path10.basename(installed) });
     return installed;
   }
   return void 0;
 }
 
+// src/xyq/jimeng/service.ts
+import os5 from "node:os";
+import path13 from "node:path";
+
+// src/xyq/selfheal.ts
+import fs8 from "node:fs";
+import os4 from "node:os";
+import path12 from "node:path";
+
+// src/xyq/jimeng/cli.ts
+import fs7 from "node:fs";
+import os3 from "node:os";
+import path11 from "node:path";
+function exeName(base, platform) {
+  return platform === "win32" ? `${base}.exe` : base;
+}
+function releaseVersion(dirName) {
+  const match = dirName.match(/jimeng-novel-(\d+\.\d+\.\d+)/);
+  if (!match || match[1] === void 0) return [0, 0, 0];
+  return match[1].split(".").map((part) => Number.parseInt(part, 10) || 0);
+}
+function compareVersion(a, b) {
+  const left = releaseVersion(a);
+  const right = releaseVersion(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+function fromPath(pathValue, fileName, platform, exists) {
+  if (pathValue === void 0 || pathValue === "") return [];
+  const found = [];
+  for (const dir of pathValue.split(path11.delimiter)) {
+    if (dir.trim() === "") continue;
+    const candidate = path11.join(dir, fileName);
+    if (exists(candidate)) found.push(candidate);
+    if (platform === "win32" && !fileName.toLowerCase().endsWith(".exe") && exists(`${candidate}.exe`)) found.push(`${candidate}.exe`);
+  }
+  return found;
+}
+function firstExisting(candidates, exists) {
+  for (const candidate of candidates) {
+    if (candidate !== void 0 && candidate !== "" && exists(candidate)) return candidate;
+  }
+  return void 0;
+}
+function locateJimengCli(deps = {}) {
+  const env = deps.env ?? process.env;
+  const home = deps.home ?? os3.homedir();
+  const platform = deps.platform ?? process.platform;
+  const exists = deps.exists ?? ((file) => {
+    try {
+      return fs7.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+  const listDir = deps.listDir ?? ((dir) => {
+    try {
+      return fs7.readdirSync(dir);
+    } catch {
+      return [];
+    }
+  });
+  const novelName = exeName("jimeng-novel", platform);
+  const releasesRoot = path11.join(home, ".local", "share", "jimeng-novel", "releases");
+  const releases = listDir(releasesRoot).filter((name) => name.startsWith("jimeng-novel-")).sort(compareVersion).reverse();
+  const novelCandidates = [
+    env.JIMENG_NOVEL_CLI,
+    ...releases.map((name) => path11.join(releasesRoot, name, novelName)),
+    path11.join(home, ".local", "bin", novelName),
+    ...fromPath(env.PATH, novelName, platform, exists)
+  ];
+  const canvasName = exeName("dreamina-canvas", platform);
+  const canvasCandidates = [
+    env.DREAMINA_CANVAS_CLI,
+    path11.join(home, "bin", canvasName),
+    path11.join(home, ".local", "bin", canvasName),
+    ...fromPath(env.PATH, canvasName, platform, exists)
+  ];
+  const novel = firstExisting(novelCandidates, exists);
+  const canvas = firstExisting(canvasCandidates, exists);
+  return {
+    ...novel === void 0 ? {} : { novel },
+    ...canvas === void 0 ? {} : { canvas }
+  };
+}
+var JIMENG_INSTALL_HINT = "curl.exe -s https://jimeng.jianying.com/novel-cli | bash\uFF08Windows \u4E0A\u6CA1\u6709 bash\uFF1A\u5B98\u65B9\u811A\u672C\u5185\u5D4C\u4E86 PowerShell \u5B89\u88C5\u5668\uFF0C\u89C1 SKILL \u7684\u5B89\u88C5\u6BB5\uFF09";
+
+// src/xyq/selfheal.ts
+var CANVAS_INSTALL_URL = "https://jimeng.jianying.com/canvas-cli/install.ps1";
+var NOVEL_CLI_URL = "https://jimeng.jianying.com/novel-cli";
+var MANUAL_INSTALL_CANVAS = "\u5728 PowerShell \u91CC\u8DD1\uFF1Airm https://jimeng.jianying.com/canvas-cli/install.ps1 | iex";
+var MANUAL_INSTALL_NOVEL = `\u77ED\u5267 CLI\uFF08Windows / PowerShell\uFF0C\u628A\u4E0B\u9762\u6574\u6BB5\u7C98\u8FDB PowerShell \u8DD1\uFF09\uFF1A$s=(irm 'https://jimeng.jianying.com/novel-cli'); $b=[regex]::Match($s,"DEFAULT_WINDOWS_INSTALLER_BASE64='([^']+)'").Groups[1].Value; $p=Join-Path $env:TEMP 'jimeng-novel-install.ps1'; [IO.File]::WriteAllText($p,[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b))); & $p`;
+function truncate(text, limit = 400) {
+  const trimmed = text.trim();
+  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit)}\u2026`;
+}
+function defaultWriteTempScript(name, content) {
+  const dir = fs8.mkdtempSync(path12.join(os4.tmpdir(), "jimeng-install-"));
+  const file = path12.join(dir, name);
+  fs8.writeFileSync(file, content, "utf8");
+  return {
+    file,
+    cleanup: () => {
+      try {
+        fs8.rmSync(dir, { recursive: true, force: true });
+      } catch {
+      }
+    }
+  };
+}
+function extractWindowsInstaller(script) {
+  const match = script.match(/DEFAULT_WINDOWS_INSTALLER_BASE64='([A-Za-z0-9+/=]+)'/);
+  if (!match || match[1] === void 0) return void 0;
+  try {
+    return Buffer.from(match[1], "base64").toString("utf8");
+  } catch {
+    return void 0;
+  }
+}
+function createJimengSelfHealer(deps) {
+  const platform = deps.platform ?? process.platform;
+  const now = deps.now ?? Date.now;
+  const installTimeout = deps.installTimeoutMs ?? 12e4;
+  const statusTimeout = deps.statusTimeoutMs ?? 2e4;
+  const loginTimeout = deps.loginTimeoutMs ?? 6e4;
+  const installBackoff = deps.installBackoffMs ?? 10 * 6e4;
+  const loginBackoff = deps.loginBackoffMs ?? 5 * 6e4;
+  const powershell = deps.powershell ?? deps.env?.JIMENG_POWERSHELL ?? (platform === "win32" ? "powershell.exe" : "powershell");
+  const fetchText = deps.fetchText ?? (async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`\u4E0B\u8F7D\u5931\u8D25 HTTP ${response.status}`);
+    return await response.text();
+  });
+  const writeTemp = deps.writeTempScript ?? defaultWriteTempScript;
+  const locate = () => (deps.locate ?? (() => locateJimengCli(deps.locateDeps)))();
+  let installInFlight;
+  let lastInstall;
+  let loginInFlight;
+  let lastLogin;
+  async function runQuiet(args, timeoutMs) {
+    const result = await deps.run(args, { env: {}, timeoutMs });
+    const detail = truncate(`${result.stdout}
+${result.stderr}`);
+    if (result.timedOut) return { ok: false, detail: `\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\uFF09${detail === "" ? "" : `\uFF1A${detail}`}` };
+    if (result.code !== 0) return { ok: false, detail: detail === "" ? `\u9000\u51FA\u7801 ${result.code}` : detail };
+    return { ok: true, detail };
+  }
+  async function installCanvas() {
+    const command = `irm '${CANVAS_INSTALL_URL}' | iex`;
+    return runQuiet([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-Command", command], installTimeout);
+  }
+  async function installNovel() {
+    let script;
+    try {
+      script = await fetchText(NOVEL_CLI_URL);
+    } catch (error) {
+      return { ok: false, detail: `\u4E0B\u8F7D ${NOVEL_CLI_URL} \u5931\u8D25\uFF1A${String(error?.message ?? error)}` };
+    }
+    const installer = extractWindowsInstaller(script);
+    if (installer === void 0) return { ok: false, detail: "novel-cli \u811A\u672C\u91CC\u6CA1\u627E\u5230\u5185\u5D4C\u7684 Windows \u5B89\u88C5\u5668" };
+    const temp = writeTemp("jimeng-novel-install.ps1", installer);
+    try {
+      return await runQuiet([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", temp.file], installTimeout);
+    } finally {
+      temp.cleanup();
+    }
+  }
+  async function doInstall() {
+    const current = locate();
+    if (current.novel !== void 0) return { ok: true, cliPath: current.novel };
+    if (platform !== "win32") {
+      const message2 = `\u8FD9\u53F0\u673A\u5668\u4E0D\u662F Windows\uFF0C\u63D2\u4EF6\u4E0D\u81EA\u52A8\u8DD1\u5B89\u88C5\u811A\u672C\u3002\u8BF7\u624B\u5DE5\u5B89\u88C5\u5373\u68A6 CLI \u540E\u91CD\u8BD5\u3002${MANUAL_INSTALL_NOVEL}`;
+      lastInstall = { at: now(), ok: false, message: message2 };
+      return { ok: false, message: message2 };
+    }
+    deps.log("\u5373\u68A6 CLI \u6CA1\u88C5\uFF0C\u5F00\u59CB\u81EA\u52A8\u5B89\u88C5\uFF08\u753B\u5E03 + \u77ED\u5267\uFF09", { platform });
+    const canvas = await installCanvas();
+    const novel = await installNovel();
+    const after = locate();
+    if (after.novel !== void 0) {
+      deps.log("\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5B8C\u6210", { path: path12.basename(after.novel) });
+      lastInstall = { at: now(), ok: true, message: "" };
+      return { ok: true, cliPath: after.novel };
+    }
+    const reasons = [];
+    if (!canvas.ok) reasons.push(`\u753B\u5E03\uFF1A${canvas.detail}`);
+    if (!novel.ok) reasons.push(`\u77ED\u5267\uFF1A${novel.detail}`);
+    if (reasons.length === 0) {
+      reasons.push("\u5B89\u88C5\u811A\u672C\u8DD1\u5B8C\u4E86\uFF0C\u4F46\u6CA1\u5728 ~/.local/share/jimeng-novel/releases \u4E0B\u627E\u5230 jimeng-novel.exe");
+      reasons.push("\u82E5\u63D0\u793A\u6587\u4EF6\u88AB\u5360\u7528\uFF0C\u628A %USERPROFILE%\\bin\\.dreamina-canvas.install.* \u91CC\u7684 dreamina-canvas_windows_amd64.exe \u624B\u52A8\u6539\u540D\u4E3A dreamina-canvas.exe");
+    }
+    const message = `\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF1A${reasons.join("\uFF1B")}\u3002${MANUAL_INSTALL_CANVAS}`;
+    deps.log("\u5373\u68A6 CLI \u81EA\u52A8\u5B89\u88C5\u5931\u8D25\uFF08\u4E91\u96C0/\u5176\u5B83\u529F\u80FD\u4E0D\u53D7\u5F71\u54CD\uFF09", { reason: truncate(reasons.join("\uFF1B"), 200) });
+    lastInstall = { at: now(), ok: false, message };
+    return { ok: false, message };
+  }
+  async function ensureCli(autoInstall) {
+    const current = locate();
+    if (current.novel !== void 0) return { ok: true, cliPath: current.novel };
+    if (!autoInstall) {
+      return {
+        ok: false,
+        message: `\u6CA1\u627E\u5230\u5373\u68A6 CLI\uFF08jimeng-novel\uFF09\u3002\u672C\u6B21\u8C03\u7528\u6CA1\u5F00\u81EA\u52A8\u5B89\u88C5\uFF08autoInstall:false\uFF0C\u9ED8\u8BA4\u5C31\u662F\u5173\u7684\uFF09\uFF1A\u9700\u8981\u81EA\u52A8\u88C5\u5C31\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 autoInstall:true\uFF1B\u624B\u5DE5\u5B89\u88C5\uFF1A${MANUAL_INSTALL_CANVAS}\uFF1B${MANUAL_INSTALL_NOVEL}`
+      };
+    }
+    if (lastInstall !== void 0 && !lastInstall.ok && now() - lastInstall.at < installBackoff) {
+      return { ok: false, message: `${lastInstall.message}\uFF08${Math.ceil((installBackoff - (now() - lastInstall.at)) / 6e4)} \u5206\u949F\u5185\u4E0D\u518D\u91CD\u8BD5\uFF0C\u907F\u514D\u53CD\u590D\u4E0B\u8F7D\uFF09` };
+    }
+    if (installInFlight !== void 0) return installInFlight;
+    installInFlight = doInstall().finally(() => {
+      installInFlight = void 0;
+    });
+    return installInFlight;
+  }
+  async function readLogin(cliPath) {
+    const result = await deps.run([cliPath, "credit", "get", "-j"], { env: {}, timeoutMs: statusTimeout });
+    const raw = result.stdout.trim();
+    if (raw === "") return void 0;
+    try {
+      const parsed = JSON.parse(raw);
+      const error = parsed.error !== null && typeof parsed.error === "object" ? parsed.error : void 0;
+      const details = error?.details !== null && typeof error?.details === "object" ? error.details : void 0;
+      const auth = details?.auth !== null && typeof details?.auth === "object" ? details.auth : void 0;
+      if (error?.code === "AUTH_FAILED" || auth?.nextAction === "login") return false;
+      if (parsed.status === "ok" || parsed.status === "success") return true;
+      if (error === void 0 && parsed.data !== void 0 && parsed.data !== null) return true;
+      return void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  async function startLogin(cliPath) {
+    if (lastLogin !== void 0 && now() - lastLogin.at < loginBackoff) return { ok: false, message: lastLogin.message };
+    if (loginInFlight !== void 0) return loginInFlight;
+    loginInFlight = doLogin(cliPath).finally(() => {
+      loginInFlight = void 0;
+    });
+    return loginInFlight;
+  }
+  async function doLogin(cliPath) {
+    deps.log("\u5373\u68A6\u6CA1\u767B\u5F55\uFF0C\u81EA\u52A8\u53D1\u8D77\u6D4F\u89C8\u5668\u6388\u6743\uFF08\u9700\u8981\u7528\u6237\u70B9\u94FE\u63A5\uFF09", { path: path12.basename(cliPath) });
+    const result = await deps.run([cliPath, "login", "--non-interactive", "-j"], { env: {}, timeoutMs: loginTimeout });
+    if (result.timedOut) {
+      const message2 = `\u5373\u68A6\u6388\u6743\u53D1\u8D77\u8D85\u65F6\uFF08${Math.round(loginTimeout / 1e3)} \u79D2\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D`;
+      lastLogin = { at: now(), message: message2 };
+      return { ok: false, message: message2 };
+    }
+    let link = "";
+    let nextCommand = "";
+    try {
+      const parsed = JSON.parse(result.stdout.trim());
+      const data = parsed.data !== null && typeof parsed.data === "object" ? parsed.data : void 0;
+      const challenge = data?.challenge !== null && typeof data?.challenge === "object" ? data.challenge : void 0;
+      if (typeof challenge?.verificationUriComplete === "string" && challenge.verificationUriComplete !== "") link = challenge.verificationUriComplete;
+      else if (typeof challenge?.verificationUri === "string" && challenge.verificationUri !== "") link = challenge.verificationUri;
+      if (typeof data?.nextCommand === "string" && data.nextCommand !== "") nextCommand = data.nextCommand;
+      if (link === "" && data?.status === "logged_in") return { ok: true };
+    } catch {
+    }
+    if (link === "") {
+      const detail = truncate(`${result.stdout}
+${result.stderr}`);
+      const message2 = `\u5373\u68A6\u6388\u6743\u6CA1\u62FF\u5230\u94FE\u63A5\uFF08${detail === "" ? "CLI \u6CA1\u6709\u8F93\u51FA" : detail}\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D`;
+      lastLogin = { at: now(), message: message2 };
+      return { ok: false, message: message2 };
+    }
+    const lines = [`\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\u3002**\u70B9\u8FD9\u4E2A\u94FE\u63A5\u6388\u6743**\uFF1A${link}`, "\u6388\u6743\u5B8C\u544A\u8BC9\u6211\uFF0C\u6211\u63A5\u7740\u5F80\u4E0B\u8D70\uFF08\u4E0D\u7528\u518D\u95EE\u6211\u522B\u7684\uFF09\u3002"];
+    if (nextCommand !== "") lines.push(`\u6388\u6743\u540E\u9700\u8981\u7EED\u7B49\u7684\u547D\u4EE4\uFF1A${nextCommand}`);
+    const message = lines.join("\n");
+    lastLogin = { at: now(), message };
+    return { ok: false, message };
+  }
+  return {
+    ensureCli,
+    readLogin,
+    /** 第二步：授权在不在（只在确认「未登录」时发一次授权）。 */
+    async ensureLogin(cliPath, autoLogin) {
+      const loggedIn = await readLogin(cliPath);
+      if (loggedIn === true) return { ok: true };
+      if (loggedIn === void 0) return { ok: true };
+      if (!autoLogin) {
+        return {
+          ok: false,
+          message: `\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\uFF0C\u672C\u6B21\u8C03\u7528\u5173\u6389\u4E86\u81EA\u52A8\u6388\u6743\uFF08autoLogin:false\uFF09\u3002\u624B\u5DE5\uFF1A\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D\uFF0C\u518D\u628A\u8FD4\u56DE\u7684\u94FE\u63A5\u7ED9\u7528\u6237\u70B9\u3002`
+        };
+      }
+      return startLogin(cliPath);
+    },
+    /** 测试/排障用：清掉进程内的退避与单飞状态。 */
+    reset() {
+      installInFlight = void 0;
+      lastInstall = void 0;
+      loginInFlight = void 0;
+      lastLogin = void 0;
+    }
+  };
+}
+
+// src/xyq/jimeng/service.ts
+function parseEnvelope(stdout) {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (line === void 0) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed !== null && typeof parsed === "object") {
+        const envelope = {};
+        if (typeof parsed.status === "string") envelope.status = parsed.status;
+        if ("data" in parsed) envelope.data = parsed.data;
+        if (parsed.error !== null && typeof parsed.error === "object") envelope.error = parsed.error;
+        return envelope;
+      }
+    } catch {
+    }
+  }
+  return void 0;
+}
+var MEDIA_EXT = /\.(mp4|mov|webm|mkv|png|jpe?g|webp|gif|bmp|mp3|wav|m4a)$/i;
+function collectMediaPaths(node, acc = [], depth = 0) {
+  if (depth > 8 || node === null || node === void 0) return acc;
+  if (typeof node === "string") {
+    if (MEDIA_EXT.test(node) && !acc.includes(node)) acc.push(node);
+    return acc;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) collectMediaPaths(item, acc, depth + 1);
+    return acc;
+  }
+  if (typeof node === "object") {
+    for (const value of Object.values(node)) collectMediaPaths(value, acc, depth + 1);
+  }
+  return acc;
+}
+function pickNumber(node, keys, depth = 0) {
+  if (depth > 6 || node === null || node === void 0) return void 0;
+  if (typeof node === "number" && Number.isFinite(node)) return node;
+  if (typeof node === "string" && node.trim() !== "" && Number.isFinite(Number(node))) return Number(node);
+  if (typeof node !== "object") return void 0;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = pickNumber(item, keys, depth + 1);
+      if (found !== void 0) return found;
+    }
+    return void 0;
+  }
+  const record = node;
+  for (const key of keys) {
+    const found = pickNumber(record[key], keys, depth + 1);
+    if (found !== void 0) return found;
+  }
+  return void 0;
+}
+function loginHint(cliPath) {
+  return `\u5728\u7EC8\u7AEF\u8DD1\u300C"${cliPath}" login --non-interactive\u300D\uFF0C\u628A\u8FD4\u56DE\u7684\u6388\u6743\u94FE\u63A5\u53D1\u7ED9\u7528\u6237\u70B9\u5F00\uFF08\u6D4F\u89C8\u5668\u91CC\u786E\u8BA4\u540E\uFF0C\u6309\u8FD4\u56DE\u7684 nextCommand \u7EED\u7B49\u5373\u5B8C\u6210\u767B\u5F55\uFF09`;
+}
+function envelopeMessage(envelope, cliPath, raw) {
+  const error = envelope.error;
+  if (error === void 0) {
+    if (envelope.status === "error") return raw.trim() === "" ? "\u5373\u68A6 CLI \u8FD4\u56DE\u4E86\u9519\u8BEF\uFF08\u6CA1\u6709\u7EC6\u8282\uFF09" : raw.trim().slice(0, 300);
+    return void 0;
+  }
+  const code = error.code ?? "";
+  const text = `${error.message ?? ""} ${error.hint ?? ""} ${raw}`;
+  if (code === "AUTH_FAILED" || /not_logged_in|未登录|登录已失效|credential_expired|nextAction\"?\s*:\s*\"login/i.test(text)) {
+    return `\u5373\u68A6\u8FD8\u6CA1\u767B\u5F55\uFF08\u6216\u767B\u5F55\u5DF2\u8FC7\u671F\uFF09\u3002${loginHint(cliPath)}`;
+  }
+  const message = [error.message, error.hint].filter((part) => typeof part === "string" && part !== "").join("\uFF5C");
+  return message === "" ? `\u5373\u68A6 CLI \u62A5\u9519\uFF1A${code === "" ? "\u672A\u77E5" : code}` : `\u5373\u68A6\u62A5\u9519\uFF1A${message.slice(0, 300)}`;
+}
+function createJimengService(deps) {
+  const locate = () => (deps.locate ?? (() => locateJimengCli(deps.locateDeps)))();
+  const noopLog = () => {
+  };
+  const healer = deps.healer ?? createJimengSelfHealer({
+    run: deps.run,
+    log: deps.log ?? noopLog,
+    locate,
+    ...deps.platform === void 0 ? {} : { platform: deps.platform },
+    ...deps.env === void 0 ? {} : { env: deps.env },
+    ...deps.fetchText === void 0 ? {} : { fetchText: deps.fetchText },
+    ...deps.writeTempScript === void 0 ? {} : { writeTempScript: deps.writeTempScript },
+    ...deps.installTimeoutMs === void 0 ? {} : { installTimeoutMs: deps.installTimeoutMs }
+  });
+  const waitImage = deps.waitImageSec ?? 120;
+  const waitVideo = deps.waitVideoSec ?? 300;
+  const outDir = deps.outDir ?? path13.join(os5.homedir(), "jimeng-output");
+  const withSeparator = (dir) => dir.endsWith("/") || dir.endsWith("\\") ? dir : `${dir}${path13.sep}`;
+  async function probe() {
+    const paths = locate();
+    if (paths.novel === void 0) {
+      return {
+        id: "jimeng",
+        label: "\u5373\u68A6",
+        available: false,
+        reason: "\u6CA1\u627E\u5230\u5373\u68A6 CLI\uFF08jimeng-novel\uFF09\u2014\u2014\u4E0D\u662F\u6CA1\u767B\u5F55\uFF0C\u662F\u8FD9\u53F0\u673A\u5668\u4E0A\u6CA1\u88C5",
+        hint: `\u88C5\u5B83\uFF1A${JIMENG_INSTALL_HINT}`
+      };
+    }
+    return { id: "jimeng", label: "\u5373\u68A6", available: true, cliPath: paths.novel };
+  }
+  async function call(args, timeoutMs) {
+    const result = await deps.run(args, { env: {}, timeoutMs });
+    const raw = `${result.stdout}
+${result.stderr}`;
+    if (result.timedOut) return { message: `\u5373\u68A6\u547D\u4EE4\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\uFF09\uFF1B\u4EFB\u52A1\u53EF\u80FD\u8FD8\u5728\u8DD1\uFF0C\u522B\u91CD\u65B0\u63D0\u4EA4` };
+    const envelope = parseEnvelope(result.stdout);
+    if (envelope === void 0) {
+      if (result.code !== 0) {
+        const reason = result.stderr.trim() !== "" ? result.stderr.trim() : result.stdout.trim();
+        return { message: reason === "" ? `\u5373\u68A6\u547D\u4EE4\u5931\u8D25\uFF08\u9000\u51FA\u7801 ${result.code}\uFF09` : `\u5373\u68A6\u547D\u4EE4\u5931\u8D25\uFF1A${reason.slice(0, 300)}` };
+      }
+      return { message: "\u5373\u68A6\u8FD4\u56DE\u4E86\u65E0\u6CD5\u89E3\u6790\u7684\u5185\u5BB9\uFF08\u4E0D\u662F JSON \u4FE1\u5C01\uFF09" };
+    }
+    const message = envelopeMessage(envelope, args[0] ?? "", raw);
+    if (message !== void 0) return { message };
+    return { envelope };
+  }
+  async function ensureAvailable() {
+    const status = await probe();
+    if (!status.available) {
+      const hint = status.hint === void 0 ? "" : ` \u4E0B\u4E00\u6B65\uFF1A${status.hint}`;
+      return { message: `\u5373\u68A6\u901A\u9053\u4E0D\u53EF\u7528\uFF1A${status.reason}\u3002${hint}` };
+    }
+    return { cli: status.cliPath };
+  }
+  return {
+    id: "jimeng",
+    label: "\u5373\u68A6",
+    probe,
+    /** 顺序固定：CLI 在不在（缺就装）→ 授权在不在（缺就发一次授权链接）。 */
+    async preflight(options = {}) {
+      const autoInstall = options.autoInstall ?? false;
+      const autoLogin = options.autoLogin ?? true;
+      const ensured = await healer.ensureCli(autoInstall);
+      if (!ensured.ok || ensured.cliPath === void 0) {
+        return { ok: false, message: ensured.message ?? "\u5373\u68A6 CLI \u4E0D\u53EF\u7528" };
+      }
+      const login = await healer.ensureLogin(ensured.cliPath, autoLogin);
+      if (!login.ok) {
+        return { ok: false, message: login.message ?? "\u5373\u68A6\u9700\u8981\u5148\u6388\u6743", needsUser: true };
+      }
+      return { ok: true };
+    },
+    async generateImage(input) {
+      const ready = await ensureAvailable();
+      if ("message" in ready) return { ok: false, message: ready.message };
+      const model = (input.model ?? deps.defaultImageModel ?? "").trim();
+      if (model === "") {
+        return { ok: false, message: "\u6CA1\u6307\u5B9A\u5373\u68A6\u56FE\u7247\u6A21\u578B\u3002\u5148\u7528\u300Cjimeng-novel model list --type image\u300D\u67E5\u6A21\u578B key\uFF08\u4F8B\u5982 seedream_5.5\uFF09\uFF0C\u518D\u4F20 model\u3002" };
+      }
+      if (input.prompt.trim() === "") return { ok: false, message: "\u9700\u8981 prompt\uFF08\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF09" };
+      const args = [ready.cli, "generate-image", "--model", model, "--prompt", input.prompt];
+      for (const image of input.images ?? []) if (image !== "") args.push("--image", image);
+      if (typeof input.ratio === "string" && input.ratio !== "") args.push("--ratio", input.ratio);
+      if (typeof input.count === "number" && Number.isFinite(input.count) && input.count > 0) {
+        args.push("--generate-image-count", String(Math.round(input.count)));
+      }
+      args.push("--wait", String(waitImage), "--out", withSeparator(input.outDir ?? outDir), "-j");
+      const answered = await call(args, (waitImage + 60) * 1e3);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = answered.envelope?.data;
+      const files = collectMediaPaths(data);
+      const running = typeof data?.status === "string" && String(data.status) === "running";
+      if (files.length === 0) {
+        return {
+          ok: false,
+          ...running ? { message: `\u5373\u68A6\u8FD8\u5728\u751F\u6210\uFF0C\u6CA1\u5230\u65F6\u95F4\uFF1B\u7A0D\u540E\u7528\u540C\u4E00\u4EFB\u52A1\u518D\u67E5\uFF08thread/run \u89C1\u8FD4\u56DE\uFF09\uFF1A${JSON.stringify(data ?? {}).slice(0, 200)}` } : { message: "\u5373\u68A6\u8FD4\u56DE\u91CC\u6CA1\u6709\u4EA7\u7269\u6587\u4EF6\u8DEF\u5F84" }
+        };
+      }
+      return { ok: true, files };
+    },
+    async generateVideo(input) {
+      const ready = await ensureAvailable();
+      if ("message" in ready) return { ok: false, message: ready.message };
+      const model = (input.model ?? deps.defaultVideoModel ?? "").trim();
+      if (model === "") {
+        return { ok: false, message: "\u6CA1\u6307\u5B9A\u5373\u68A6\u89C6\u9891\u6A21\u578B\u3002\u5148\u7528\u300Cjimeng-novel model list --type video\u300D\u67E5\u6A21\u578B key\uFF08\u4F8B\u5982 seedance_2.0\uFF09\uFF0C\u518D\u4F20 model\u3002" };
+      }
+      if (input.prompt.trim() === "") return { ok: false, message: "\u9700\u8981 prompt\uFF08\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF09" };
+      const args = [ready.cli, "generate-video", "--model", model, "--prompt", input.prompt];
+      if (typeof input.duration === "number" && Number.isFinite(input.duration) && input.duration > 0) {
+        args.push("--duration", String(Math.round(input.duration)));
+      }
+      for (const image of input.images ?? []) if (image !== "") args.push("--image", image);
+      if (typeof input.ratio === "string" && input.ratio !== "") args.push("--ratio", input.ratio);
+      args.push("--wait", String(waitVideo), "--out", withSeparator(input.outDir ?? outDir), "-j");
+      const answered = await call(args, (waitVideo + 60) * 1e3);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = answered.envelope?.data;
+      const files = collectMediaPaths(data);
+      if (files.length === 0) {
+        const record = data !== null && typeof data === "object" ? data : {};
+        const tid = typeof record.thread_id === "string" ? record.thread_id : "";
+        const rid = typeof record.run_id === "string" ? record.run_id : "";
+        return {
+          ok: false,
+          message: record.status === "running" ? `\u5373\u68A6\u8FD8\u5728\u51FA\u7247\uFF08thread/run\uFF1A${tid} / ${rid}\uFF09\uFF0C\u5230\u8FD9\u8F6E\u6CA1\u7B49\u5230\uFF1B\u7A0D\u540E\u7528\u540C\u4E00\u4EFB\u52A1\u518D\u67E5\uFF0C\u522B\u91CD\u65B0\u63D0\u4EA4` : "\u5373\u68A6\u8FD4\u56DE\u91CC\u6CA1\u6709\u4EA7\u7269\u6587\u4EF6\u8DEF\u5F84"
+        };
+      }
+      return { ok: true, files };
+    },
+    async balance() {
+      const ready = await ensureAvailable();
+      if ("message" in ready) return { ok: false, message: ready.message };
+      const answered = await call([ready.cli, "credit", "get", "-j"], 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const value = pickNumber(answered.envelope?.data, ["balance", "credits", "total", "remain"]);
+      if (value === void 0) return { ok: false, message: "\u5373\u68A6\u6CA1\u6709\u8FD4\u56DE\u79EF\u5206\u4F59\u989D\u5B57\u6BB5" };
+      return { ok: true, totalRemain: String(value) };
+    },
+    async models(kind) {
+      const ready = await ensureAvailable();
+      if ("message" in ready) return { ok: false, message: ready.message };
+      const answered = await call([ready.cli, "model", "list", "--type", kind, "-j"], 9e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = answered.envelope?.data;
+      const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+      const models = [];
+      for (const item of items) {
+        const key = typeof item.key === "string" && item.key !== "" ? item.key : typeof item.name === "string" ? item.name : "";
+        if (key === "") continue;
+        models.push({ key, name: typeof item.name === "string" && item.name !== "" ? item.name : key });
+      }
+      if (models.length === 0) return { ok: false, message: "\u5373\u68A6\u6CA1\u6709\u8FD4\u56DE\u53EF\u7528\u6A21\u578B\u5217\u8868" };
+      return { ok: true, models };
+    }
+  };
+}
+
+// src/xyq/start.ts
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
 // src/xyq/guidance.ts
 function xyqGuidance(freedom) {
   const lines = [
-    "## \u5C0F\u4E91\u96C0\uFF08\u56FE\u7247 / \u89C6\u9891\u751F\u6210\uFF09",
-    "\u672C\u673A\u63A5\u5165\u4E86\u5C0F\u4E91\u96C0\u5B98\u65B9 CLI\uFF0C\u63D0\u4F9B `generate_image`\u3001`generate_video`\u3001`xyq_balance`\u3001`xyq_models` \u56DB\u4E2A\u5DE5\u5177\u3002",
-    "\u4F7F\u7528\u987A\u5E8F\uFF1A\u5148 `xyq_models` \u67E5\u6A21\u578B \u2192 `xyq_balance` \u770B\u79EF\u5206 \u2192 \u751F\u6210 \u2192 \u628A\u5DE5\u5177\u8FD4\u56DE\u7684**\u672C\u5730\u6587\u4EF6\u7EDD\u5BF9\u8DEF\u5F84**\u544A\u8BC9\u7528\u6237\u3002",
-    "\u6210\u672C\uFF1A\u89C6\u9891\u6309\u65F6\u957F\u8BA1\u8D39\uFF08Seedance 2.0 Mini \u4F53\u9A8C\u7248\u7EA6 4 \u79EF\u5206/\u79D2\uFF09\uFF0C\u56FE\u7247\u6309\u5F20\u8BA1\u8D39\uFF1B\u65F6\u957F\u4F1A\u88AB\u8BBE\u7F6E\u91CC\u7684\u4E0A\u9650\u622A\u65AD\u3002"
+    "## \u751F\u6210\u901A\u9053\uFF08\u56FE\u7247 / \u89C6\u9891\uFF09",
+    "\u672C\u673A\u63A5\u5165\u4E86\u4E24\u6761\u751F\u6210\u901A\u9053\uFF0C\u7528\u5DE5\u5177\u53C2\u6570 `channel` \u9009\uFF1A`channel=xyq`\uFF08\u9ED8\u8BA4\uFF0C\u5C0F\u4E91\u96C0\uFF09/ `channel=jimeng`\uFF08\u5373\u68A6\uFF09\u3002",
+    "\u5DE5\u5177\uFF1A`generate_image`\u3001`generate_video`\u3001`xyq_balance`\uFF08\u4E24\u6761\u901A\u9053\u5404\u4E00\u6BB5\u989D\u5EA6\uFF09\u3001`xyq_models`\uFF08\u5148\u5B9A\u901A\u9053\u518D\u67E5\u6A21\u578B\uFF09\u3002",
+    "- \u5C0F\u4E91\u96C0\uFF08xyq\uFF09\uFF1A\u8425\u9500\u6210\u7247\u3001\u77ED\u5267 agent \u5168\u6D41\u7A0B\u3001Canvas \u753B\u5E03\u5DE5\u7A0B\u5316\u3002Access Key \u5728\u300C\u5927\u80A5\u9C7C \u2192 \u5C0F\u4E91\u96C0\u300D\u91CC\u586B\uFF0C\u79EF\u5206\u8BA1\u8D39\u3002",
+    "- \u5373\u68A6\uFF08jimeng\uFF09\uFF1A\u5373\u68A6\u753B\u5E03\u4E0E\u77ED\u5267\u521B\u4F5C\uFF08\u753B\u5E03 CLI `dreamina-canvas` + \u77ED\u5267 CLI `jimeng-novel`\uFF09\uFF0C\u753B\u5E03/\u5206\u955C/\u5BFC\u6F14\u53F0\u7C7B\u9700\u6C42\u3002\u79EF\u5206\u8BA1\u8D39\uFF0C\u767B\u5F55\u8D70**\u6D4F\u89C8\u5668\u6388\u6743**\uFF08\u4E0D\u9700\u8981 Key\uFF09\u3002",
+    "\u9009\u62E9\u53E3\u5F84\uFF1A\u7528\u6237\u70B9\u540D\u300C\u5373\u68A6 / Dreamina\u300D\u2192 jimeng\uFF1B\u70B9\u540D\u300C\u5C0F\u4E91\u96C0 / xyq\u300D\u2192 xyq\uFF1B\u6CA1\u70B9\u540D \u2192 \u9ED8\u8BA4 xyq\uFF0C\u53EA\u6709\u660E\u786E\u63D0\u51FA\u5373\u68A6\u753B\u5E03\u3001\u5373\u68A6\u77ED\u5267\u3001Dreamina \u65F6\u624D\u5207 jimeng\u3002",
+    "\u4F7F\u7528\u987A\u5E8F\uFF1A`xyq_models` \u67E5\u6A21\u578B\uFF08\u4E24\u6761\u901A\u9053\u6A21\u578B\u540D\u4E0D\u901A\u7528\uFF09\u2192 `xyq_balance` \u770B\u989D\u5EA6 \u2192 \u751F\u6210 \u2192 \u628A\u5DE5\u5177\u8FD4\u56DE\u7684**\u672C\u5730\u6587\u4EF6\u7EDD\u5BF9\u8DEF\u5F84**\u544A\u8BC9\u7528\u6237\u3002",
+    "\u6210\u672C\uFF1A\u4E91\u96C0\u89C6\u9891\u6309\u65F6\u957F\u8BA1\u8D39\uFF08Seedance 2.0 Mini \u4F53\u9A8C\u7248\u7EA6 4 \u79EF\u5206/\u79D2\uFF09\u3001\u56FE\u7247\u6309\u5F20\uFF1B\u5373\u68A6\u6309\u79EF\u5206\u8BA1\u8D39\uFF0C`credit estimate` \u624D\u662F\u51C6\u6570\uFF08\u5DE5\u5177\u4E0D\u66FF\u7528\u6237\u62A5\u4EF7\uFF09\u3002",
+    '\u8C03\u7528\u524D\u81EA\u6108\uFF1A\u5DE5\u5177\u4F1A\u5148\u8865\u73AF\u5883\u2014\u2014**\u6CA1\u767B\u5F55\u5C31\u53D1\u8D77\u4E00\u6B21\u6D4F\u89C8\u5668\u6388\u6743\u5E76\u628A\u94FE\u63A5\u7ED9\u7528\u6237**\uFF08\u9ED8\u8BA4\u5F00\uFF09\uFF1B**\u7F3A CLI \u4E0D\u4F1A\u81EA\u52A8\u88C5**\uFF08\u9ED8\u8BA4\u5173\uFF0C\u907F\u514D\u4E00\u53E5"\u753B\u5F20\u56FE"\u987A\u5E26\u5728\u4F60\u673A\u5668\u4E0A\u6267\u884C\u8FDC\u7AEF\u5B89\u88C5\u811A\u672C\uFF09\uFF0C\u7F3A\u4E86\u5C31\u62A5\u9519\u5E76\u544A\u8BC9\u7528\u6237\u300C\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 `autoInstall:true`\u300D\uFF0C\u6216\u624B\u5DE5\u88C5\u3002\u88C5\u4E86\u6CA1\u88C5\u3001\u767B\u4E86\u6CA1\u767B\u90FD\u4F1A\u7559\u4E00\u884C\u4E2D\u6587\u65E5\u5FD7\u3002',
+    "\u81EA\u6108\u5F00\u5173\uFF1A`autoLogin:false` \u53EA\u62A5\u544A\u4E0D\u53D1\u8D77\u6388\u6743\uFF1B`autoInstall:true` \u624D\u5141\u8BB8\u81EA\u52A8\u4E0B\u8F7D\u5B89\u88C5\uFF08\u4EC5 Windows\uFF0C\u7EA6 2 \u5206\u949F\uFF0C\u8D85\u65F6/\u5931\u8D25\u4F1A\u9000\u907F\uFF0C\u4E0D\u4F1A\u53CD\u590D\u4E0B\u8F7D\uFF09\u3002",
+    "\u51FA\u9519\u600E\u4E48\u8BFB\uFF1A\u5373\u68A6\u901A\u9053\u6CA1\u88C5 / \u6CA1\u767B\u5F55\u65F6\uFF0C\u5DE5\u5177\u4F1A\u8FD4\u56DE\u4E2D\u6587\u539F\u56E0 + **\u4E0B\u4E00\u6B65\u8BE5\u8DD1\u7684\u547D\u4EE4\uFF08\u542B\u7EDD\u5BF9\u8DEF\u5F84\uFF09**\uFF1B\u628A\u8FD9\u53E5\u8BDD\u539F\u6837\u8F6C\u7ED9\u7528\u6237\uFF0C\u8BA9\u4ED6\u53BB\u7EC8\u7AEF\u8DD1\uFF0C\u522B\u81EA\u5DF1\u53CD\u590D\u91CD\u8BD5\u767B\u5F55\u3002"
   ];
   if (freedom === "explicit") lines.push("\u8C03\u7528\u7EA6\u675F\uFF1A**\u53EA\u6709\u7528\u6237\u660E\u786E\u8981\u6C42\u751F\u6210\u56FE\u7247/\u89C6\u9891\u65F6\u624D\u80FD\u8C03\u7528**\uFF1B\u4E0D\u8981\u4E3A\u4E86\u201C\u7701\u4E8B\u201D\u81EA\u884C\u751F\u6210\u3002");
   else if (freedom === "budgeted") lines.push("\u8C03\u7528\u7EA6\u675F\uFF1A\u5F00\u53D1\u4EFB\u52A1\u9700\u8981\u7D20\u6750\u65F6\u53EF\u4EE5\u81EA\u884C\u8C03\u7528\uFF0C\u4F46\u5FC5\u987B\u53D7\u8BBE\u7F6E\u91CC\u7684\u989D\u5EA6\u4E0E\u65F6\u957F\u4E0A\u9650\u7EA6\u675F\uFF1B\u7528\u5B8C\u5C31\u505C\uFF0C\u4E0D\u8981\u91CD\u590D\u751F\u6210\u3002");
   else lines.push("\u8C03\u7528\u7EA6\u675F\uFF1A\u989D\u5EA6\u5DF2\u653E\u5F00\uFF0C\u81EA\u884C\u5224\u65AD\u662F\u5426\u751F\u6210\uFF1B\u4ECD\u7136\u4E0D\u8981\u91CD\u590D\u751F\u6210\u540C\u4E00\u4E2A\u7D20\u6750\u3002");
-  lines.push("Access Key \u8FC7\u671F/\u65E0\u6548\u65F6\u5DE5\u5177\u4F1A\u62A5\u9519\uFF0C\u628A\u539F\u6587\u8F6C\u544A\u7528\u6237\uFF0C\u8BA9\u4ED6\u53BB\u5C0F\u4E91\u96C0\u5B98\u7F51 \u26A1CLI/API \u2192 API \u66F4\u65B0\u3002");
+  lines.push("\u4E91\u96C0 Access Key \u8FC7\u671F/\u65E0\u6548\u65F6\u5DE5\u5177\u4F1A\u62A5\u9519\uFF0C\u628A\u539F\u6587\u8F6C\u544A\u7528\u6237\uFF0C\u8BA9\u4ED6\u53BB\u5C0F\u4E91\u96C0\u5B98\u7F51 \u26A1CLI/API \u2192 API \u66F4\u65B0\u3002");
   return lines.join("\n");
 }
 
 // src/xyq/start.ts
 function startXyq(ctx, deps) {
   const probe = {};
+  const packageRoot2 = (() => {
+    try {
+      return path14.resolve(path14.dirname(fileURLToPath2(import.meta.url)), "..", "..");
+    } catch {
+      return process.cwd();
+    }
+  })();
+  const skillAssetsRoot = path14.join(packageRoot2, "assets", "skills", XYQ_SKILL_NAME);
   const run = deps.run ?? defaultCliRunner;
   const resolveCli = deps.resolveCli ?? (() => resolveCliPath(run, { log: (message, fields) => deps.log(message, fields) }));
   const configFile = resolveXyqConfigFile(deps.dshHome);
-  const service = createXyqService({ configFile, run, resolveCli, log: deps.log });
+  const jimengChannel = deps.jimengChannel ?? createJimengService({
+    run,
+    log: deps.log,
+    outDir: deps.jimengOutDir ?? path14.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
+    ...deps.jimengLocateDeps === void 0 ? {} : { locateDeps: deps.jimengLocateDeps }
+  });
+  const service = createXyqService({ configFile, run, resolveCli, log: deps.log, channels: { jimeng: jimengChannel } });
   const disposers = [];
   let unregister;
   let started = false;
   let stopped = false;
-  const outDir = path10.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
+  const outDir = path14.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const routeDeps = { service, outDir, log: deps.log };
   const tryStart = () => {
     if (started || stopped) return;
@@ -3092,7 +3947,7 @@ function startXyq(ctx, deps) {
         [XYQ_RESULT_ROUTE, xyqResultHandler(routeDeps)],
         [XYQ_FILE_ROUTE, xyqFileHandler(routeDeps)]
       ];
-      for (const [path11, handler] of registers) disposers.push(web.register({ kind: "exact", path: path11, handler }));
+      for (const [path15, handler] of registers) disposers.push(web.register({ kind: "exact", path: path15, handler }));
       unregister = () => {
         for (const dispose of disposers.splice(0)) dispose();
       };
@@ -3162,7 +4017,7 @@ function startXyq(ctx, deps) {
     try {
       const tools = ctx.get?.("tools", true);
       if (tools && typeof tools.register === "function") {
-        for (const tool of xyqTools(service)) tools.register(tool);
+        for (const tool of xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) })) tools.register(tool);
         probe.tools = "registered";
       } else {
         probe.tools = "no-tools";
@@ -3182,6 +4037,22 @@ function startXyq(ctx, deps) {
       probe.section = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
     }
   }
+  void (async () => {
+    try {
+      const status = await jimengChannel.probe();
+      if (status.available) {
+        probe.jimeng = `available:${status.cliPath}`;
+      } else {
+        probe.jimeng = `unavailable:${status.reason}`;
+        deps.log("\u5373\u68A6\u901A\u9053\u4E0D\u53EF\u7528\uFF08\u5C0F\u4E91\u96C0\u4E0D\u53D7\u5F71\u54CD\uFF09", { reason: status.reason });
+      }
+    } catch (error) {
+      probe.jimeng = `probe threw:${String(error?.message ?? error).slice(0, 80)}`;
+      deps.log("\u5373\u68A6\u901A\u9053\u63A2\u6D4B\u629B\u9519\uFF08\u5C0F\u4E91\u96C0\u4E0D\u53D7\u5F71\u54CD\uFF09", {
+        message: String(error?.message ?? error).slice(0, 200)
+      });
+    }
+  })();
   return {
     probe,
     service,

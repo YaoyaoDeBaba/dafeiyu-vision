@@ -27,6 +27,11 @@ import {
 } from './routes.js'
 import { xyqTools } from './tools.js'
 import { defaultCliRunner, resolveCliPath, type CliRunner } from './cli.js'
+import { createJimengService } from './jimeng/service.js'
+import type { LocateDeps } from './jimeng/cli.js'
+import type { GenerationChannel } from './channel.js'
+import { readXyqSkillBody, XYQ_SKILL_NAME } from './skill.js'
+import { fileURLToPath } from 'node:url'
 
 interface LooseContext {
   get?<T>(name: string, optional: true): T | undefined
@@ -58,15 +63,39 @@ export function startXyq(
     log: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
     run?: CliRunner
     resolveCli?: () => Promise<string | undefined>
+    /** 测试注入：换掉即梦通道实现（不传就按本机现状探测）。 */
+    jimengChannel?: GenerationChannel
+    /** 测试注入：即梦 CLI 的定位依赖（假 exists/listDir 等）。 */
+    jimengLocateDeps?: LocateDeps
+    /** 即梦产物落盘目录；默认 <dshHome>/storages/dsh-remote-dafeiyu/jimeng-output。 */
+    jimengOutDir?: string
   },
 ): XyqHandle {
   const probe: Record<string, string> = {}
+  // 插件包根目录（dist/bundle/index.js → 上两级），用来找 assets/skills/<skill>/SKILL.md
+  const packageRoot = ((): string => {
+    try {
+      return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+    } catch {
+      return process.cwd()
+    }
+  })()
+  const skillAssetsRoot = path.join(packageRoot, 'assets', 'skills', XYQ_SKILL_NAME)
   const run = deps.run ?? defaultCliRunner
   const resolveCli =
     deps.resolveCli ??
     (() => resolveCliPath(run, { log: (message, fields) => deps.log(message, fields) }))
   const configFile = resolveXyqConfigFile(deps.dshHome)
-  const service = createXyqService({ configFile, run, resolveCli, log: deps.log })
+  // 即梦通道：二进制按绝对路径 spawn（安装器不进 PATH），产物落 storages 里与云雀同层。
+  const jimengChannel =
+    deps.jimengChannel ??
+    createJimengService({
+      run,
+      log: deps.log,
+      outDir: deps.jimengOutDir ?? path.join(deps.dshHome, 'storages', 'dsh-remote-dafeiyu', 'jimeng-output'),
+      ...(deps.jimengLocateDeps === undefined ? {} : { locateDeps: deps.jimengLocateDeps }),
+    })
+  const service = createXyqService({ configFile, run, resolveCli, log: deps.log, channels: { jimeng: jimengChannel } })
 
   const disposers: Array<() => void> = []
   let unregister: (() => void) | undefined
@@ -163,7 +192,8 @@ export function startXyq(
     try {
       const tools = ctx.get?.('tools', true) as { register?: (definition: Record<string, unknown>) => unknown } | undefined
       if (tools && typeof tools.register === 'function') {
-        for (const tool of xyqTools(service)) tools.register(tool)
+        // `xyq_guide` 读的就是 skill 那份 SKILL.md —— 单一真源（同识图的做法）。
+        for (const tool of xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) })) tools.register(tool)
         probe.tools = 'registered'
       } else {
         probe.tools = 'no-tools'
@@ -185,6 +215,24 @@ export function startXyq(
       probe.section = `threw: ${String((error as Error)?.message ?? error).slice(0, 80)}`
     }
   }
+
+  // 即梦通道：只探一次（只看装没装）；不可用只标这一条通道 + 一行日志，云雀完全不受影响。
+  void (async () => {
+    try {
+      const status = await jimengChannel.probe()
+      if (status.available) {
+        probe.jimeng = `available:${status.cliPath}`
+      } else {
+        probe.jimeng = `unavailable:${status.reason}`
+        deps.log('即梦通道不可用（小云雀不受影响）', { reason: status.reason })
+      }
+    } catch (error) {
+      probe.jimeng = `probe threw:${String((error as Error)?.message ?? error).slice(0, 80)}`
+      deps.log('即梦通道探测抛错（小云雀不受影响）', {
+        message: String((error as Error)?.message ?? error).slice(0, 200),
+      })
+    }
+  })()
 
   return {
     probe,
