@@ -9,6 +9,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // 现在用本包 `../http/guards.js` 里逐字照抄的那一份（独立包不能引本体代码）。
 import { applyCors, preflight, hostIsLoopback, originIsLoopbackOrAbsent } from '../http/guards.js'
 import type { XyqService } from './service.js'
+import type { CanvasService } from './canvas/service.js'
 import { channelParamError, normalizeChannelId, type ChannelId } from './channel.js'
 
 /**
@@ -30,11 +31,15 @@ export const XYQ_DESCRIBE_ROUTE = '/api/dsh-remote-dafeiyu/xyq/describe'
 export const XYQ_GENERATE_ROUTE = '/api/dsh-remote-dafeiyu/xyq/generate'
 export const XYQ_RESULT_ROUTE = '/api/dsh-remote-dafeiyu/xyq/result'
 export const XYQ_FILE_ROUTE = '/api/dsh-remote-dafeiyu/xyq/file'
+/** 即梦画布只读（设置页面板用）：?what=status|canvases|current|nodes */
+export const XYQ_CANVAS_ROUTE = '/api/dsh-remote-dafeiyu/xyq/canvas'
 
 export interface XyqRouteDeps {
   service: XyqService
   /** 生成的产物目录（file 路由只允许读这下面）。 */
   outDir: string
+  /** 即梦画布只读服务（0.9.0）；没装画布 CLI 时为 undefined，路由如实回 unavailable。 */
+  canvas?: CanvasService
   log: (message: string, fields?: Record<string, string | number | boolean | undefined>) => void
 }
 
@@ -287,6 +292,67 @@ export function xyqFileHandler(deps: XyqRouteDeps) {
       else response.end(data)
     } catch {
       json(response, 404, { ok: false, error: '文件不存在' })
+    }
+  }
+}
+
+/**
+ * `GET /xyq/canvas?what=status|canvases|current|nodes[&canvasId=&type=&status=&query=&limit=&offset=]`
+ *
+ * 设置页面板用，**只读**：写操作（建画布/建节点/跑/删）不在这里开，避免面板成为收费入口。
+ */
+export function xyqCanvasHandler(deps: XyqRouteDeps) {
+  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    applyCors(request, response)
+    if (preflight(request, response)) return
+    const denied = rejected(request)
+    if (denied !== undefined) {
+      json(response, 403, { ok: false, error: denied })
+      return
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      json(response, 405, { ok: false, error: '只支持 GET（画布只读）' })
+      return
+    }
+    const canvas = deps.canvas
+    if (canvas === undefined) {
+      json(response, 200, { ok: false, unavailable: true, error: '没装即梦画布 CLI（dreamina-canvas），画布面板不可用' })
+      return
+    }
+    const url = new URL(request.url ?? '/', 'http://localhost')
+    const what = (url.searchParams.get('what') ?? 'status').trim()
+    try {
+      if (what === 'status') {
+        const result = await canvas.status()
+        json(response, 200, result)
+        return
+      }
+      if (what === 'canvases') {
+        json(response, 200, await canvas.canvases())
+        return
+      }
+      if (what === 'current') {
+        json(response, 200, await canvas.current())
+        return
+      }
+      if (what === 'nodes') {
+        const limitParam = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+        const offsetParam = Number.parseInt(url.searchParams.get('offset') ?? '', 10)
+        const result = await canvas.nodes({
+          ...(url.searchParams.get('canvasId') === null ? {} : { canvasId: String(url.searchParams.get('canvasId')) }),
+          ...(url.searchParams.get('type') === null ? {} : { type: String(url.searchParams.get('type')) }),
+          ...(url.searchParams.get('status') === null ? {} : { status: String(url.searchParams.get('status')) }),
+          ...(url.searchParams.get('query') === null ? {} : { query: String(url.searchParams.get('query')) }),
+          ...(Number.isFinite(limitParam) ? { limit: limitParam } : {}),
+          ...(Number.isFinite(offsetParam) ? { offset: offsetParam } : {}),
+        })
+        json(response, 200, result)
+        return
+      }
+      json(response, 400, { ok: false, error: `what 只能是 status / canvases / current / nodes，收到的是「${what}」` })
+    } catch (error) {
+      deps.log('画布只读路由失败', { what, message: String((error as Error)?.message ?? error).slice(0, 160) })
+      json(response, 500, { ok: false, error: String((error as Error)?.message ?? error).slice(0, 200) })
     }
   }
 }

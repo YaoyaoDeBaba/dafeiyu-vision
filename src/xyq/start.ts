@@ -10,6 +10,7 @@ import { createXyqService, type XyqService } from './service.js'
 import { resolveXyqConfigFile, readXyqConfig } from './config.js'
 import {
   XYQ_BALANCE_ROUTE,
+  XYQ_CANVAS_ROUTE,
   XYQ_CONFIG_ROUTE,
   XYQ_DESCRIBE_ROUTE,
   XYQ_FILE_ROUTE,
@@ -20,6 +21,7 @@ import {
   xyqConfigHandler,
   xyqDescribeHandler,
   xyqFileHandler,
+  xyqCanvasHandler,
   xyqGenerateHandler,
   xyqQueryHandler,
   xyqResultHandler,
@@ -118,7 +120,7 @@ export function startXyq(
   let stopped = false
 
   const outDir = path.join(deps.dshHome, 'storages', 'dsh-remote-dafeiyu', 'xyq-output')
-  const routeDeps: XyqRouteDeps = { service, outDir, log: deps.log }
+  const routeDeps: XyqRouteDeps = { service, outDir, log: deps.log, canvas: canvasService }
   const tryStart = (): void => {
     if (started || stopped) return
     started = true

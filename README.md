@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 113 条判据
+npm test            # 构建 + 117 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -593,3 +593,18 @@ node delete --node-id … --update-id <u> --delete-token <t> --yes → {nodeIds,
 | `node run` / `node show` | `items[].resources[].resourceId` + `resources[].creditsAmount`（**没有 URL**，要内容必须 `resource download`） |
 | `resource download` | `data.path`（本地绝对路径）+ `size` / `sha256` |
 | `auth login`（已登录时） | `{"status":"reused","state":{"loggedIn":true,…}}`——按"已登录"处理，别再发授权 |
+
+## 十四、设置页的「即梦画布（只读）」面板（0.9.0）
+
+设置页「鲸鱼做梦」多一张卡：**画布选择器 + 节点列表 + 刷新**，数据走一条只读路由：
+
+```
+GET /api/dsh-remote-dafeiyu/xyq/canvas?what=status|canvases|current|nodes[&canvasId=&type=&status=&query=&limit=&offset=]
+```
+
+- 只读：**写操作（建画布/建节点/跑/删）不在这条路由上开**，避免面板变成第二条收费入口；
+- 没装 `dreamina-canvas` 时回 `{ok:false, unavailable:true, error:…}`（HTTP 200），面板显示"不可用"，其它功能不受影响；
+- `what` 写错回 400 + 中文；非 GET 回 405；
+- 面板里那颗「刷新」重拉 status + canvases + 当前画布的 nodes；换画布会按 `canvasId` 重查节点。
+
+实测（挂真 CLI）：`status` 带 `loggedIn/expiresAt/version`；`canvases` 回 1 个（`鲸鱼做梦自检-20261125`）；`nodes` 回该画布 1 个节点（标题/类型/状态/nodeId）。

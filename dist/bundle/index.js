@@ -4797,7 +4797,7 @@ function startXyq(ctx, deps) {
   let started = false;
   let stopped = false;
   const outDir = path15.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
-  const routeDeps = { service, outDir, log: deps.log };
+  const routeDeps = { service, outDir, log: deps.log, canvas: canvasService };
   const tryStart = () => {
     if (started || stopped) return;
     started = true;

@@ -85,6 +85,11 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
     const [status, setStatus] = useState<string>('')
     const [balance, setBalance] = useState<string>('')
     const [busy, setBusy] = useState<boolean>(false)
+    // 即梦画布（只读）：登录态 / 画布列表 / 选中画布 / 节点列表
+    const [canvasState, setCanvasState] = useState<string>('')
+    const [canvasList, setCanvasList] = useState<Array<{ projectId: string; name: string }>>([])
+    const [canvasId, setCanvasId] = useState<string>('')
+    const [canvasNodes, setCanvasNodes] = useState<Array<{ nodeId: string; type: string; title: string; status: string }>>([])
 
     const load = async (): Promise<void> => {
       setBusy(true)
@@ -133,8 +138,46 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
       }
     }
 
+    /** 即梦画布只读：登录态 + 画布列表 + 选中画布的节点（写操作不在这里开）。 */
+    const loadCanvas = async (pick?: string): Promise<void> => {
+      try {
+        const s = await callJson(`${BASE}/canvas?what=status`, undefined)
+        if (s.unavailable === true) {
+          setCanvasState(String(s.error ?? '画布不可用'))
+          setCanvasList([])
+          setCanvasNodes([])
+          return
+        }
+        const data = s.data as { loggedIn?: boolean; expiresAt?: string } | undefined
+        const loggedIn = data?.loggedIn === true
+        setCanvasState(
+          loggedIn
+            ? `画布已登录${data?.expiresAt === undefined ? '' : '（到期 ' + data.expiresAt + '）'}`
+            : '画布未登录（要让 agent 跑 xyq_canvas({action:"login"}) 拿授权链接）',
+        )
+        const list = await callJson(`${BASE}/canvas?what=canvases`, undefined)
+        if (list.ok === true && list.data !== undefined && list.data !== null) {
+          const items = (list.data as { items?: Array<{ projectId: string; name: string }> }).items ?? []
+          setCanvasList(items)
+          const target = pick ?? (canvasId !== '' ? canvasId : items[0]?.projectId ?? '')
+          if (target !== '') {
+            setCanvasId(target)
+            const nodes = await callJson(`${BASE}/canvas?what=nodes&canvasId=${encodeURIComponent(target)}&limit=20`, undefined)
+            const nodeList = nodes.data as { items?: Array<{ nodeId: string; type: string; title: string; status: string }> } | undefined
+            setCanvasNodes(nodes.ok === true ? nodeList?.items ?? [] : [])
+            if (nodes.ok !== true) setCanvasState(`节点读取失败：${String(nodes.message ?? nodes.error ?? '')}`)
+          } else {
+            setCanvasNodes([])
+          }
+        }
+      } catch (error) {
+        setCanvasState(`画布读取失败：${String((error as Error)?.message ?? error)}`)
+      }
+    }
+
     useEffect?.(() => {
       void load()
+      void loadCanvas()
     }, [])
 
     if (cfg === null) {
@@ -152,7 +195,7 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
         h('p', {
           style: { margin: 0, fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: '1.6' },
           children:
-            '「鲸鱼做梦」底下两条生成通道：小云雀（channel=xyq）与即梦（channel=jimeng），共 5 个工具：generate_image / generate_video / xyq_balance / xyq_models / xyq_guide。' +
+            '「鲸鱼做梦」底下两条生成通道：小云雀（channel=xyq）与即梦（channel=jimeng），共 6 个工具：generate_image / generate_video / xyq_balance / xyq_models / xyq_guide / xyq_canvas（即梦画布）。' +
             'Access Key 在 小云雀官网 → ⚡CLI/API → API → 管理 Access Key 新建；它有时效，过期后工具会报错并在下面提示。',
         }),
         h('div', {
@@ -226,6 +269,38 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
               ] }),
             ] }),
             h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: '改动会立即写盘；自由度与提示语在重启 DSH 后对模型生效。' }),
+          ],
+        }),
+        h('div', {
+          style: cardStyle,
+          children: [
+            h('span', { style: labelStyle, children: '即梦画布（只读）' }),
+            h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' }, children: [
+              h('select', {
+                value: canvasId,
+                style: { ...fieldStyle, width: 'auto', maxWidth: '320px' },
+                onChange: (event: { target?: { value?: string } }) => void loadCanvas(String(event?.target?.value ?? '')),
+                children: canvasList.length === 0
+                  ? [h('option', { value: '', children: '（这个账号下还没有画布）' })]
+                  : canvasList.map((item) => h('option', { key: item.projectId, value: item.projectId, children: item.name })),
+              }),
+              h('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: () => void loadCanvas(), children: '刷新' }),
+            ] }),
+            h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: canvasState }),
+            h('div', {
+              style: { display: 'flex', flexDirection: 'column', gap: '4px' },
+              children:
+                canvasNodes.length === 0
+                  ? [h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: '该画布下暂无节点' })]
+                  : canvasNodes.map((node) =>
+                      h('span', {
+                        key: node.nodeId,
+                        style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
+                        children: `${node.title || '(无标题)'}｜${node.type}｜${node.status}｜${node.nodeId}`,
+                      }),
+                    ),
+            }),
+            h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: '建画布/建节点/出图/删除都要 agent 侧传 confirm，面板只读、不扣积分。' }),
           ],
         }),
       ],
