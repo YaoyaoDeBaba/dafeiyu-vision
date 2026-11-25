@@ -10,7 +10,7 @@
  */
 import type { CanvasService } from './service.js'
 
-const ACTIONS = ['status', 'canvases', 'current', 'nodes', 'login', 'create-canvas', 'node-create', 'node-quote', 'node-run', 'node-download'] as const
+const ACTIONS = ['status', 'canvases', 'current', 'nodes', 'login', 'create-canvas', 'node-create', 'node-quote', 'node-run', 'node-download', 'node-delete', 'canvas-delete'] as const
 type Action = (typeof ACTIONS)[number]
 
 function ignoredKeys(args: Record<string, unknown>, known: string[]): string[] {
@@ -44,7 +44,8 @@ export function canvasTools(service: CanvasService, deps: { maxCredits?: number 
           mode: { type: 'string', enum: ['t2i', 'i2i'], description: 'node-create 用：文生图/图生图（默认 t2i）' },
           nodeIds: { type: 'array', items: { type: 'string' }, description: 'node-quote / node-run 用：节点 id 列表' },
           resourceIds: { type: 'array', items: { type: 'string' }, description: 'node-download 用：资源 id 列表（node-run 回的那串）' },
-          confirm: { type: 'boolean', description: '写操作开关：create-canvas / node-create / node-run 必须显式传 true 才会执行（默认不执行）' },
+          confirm: { type: 'boolean', description: '写操作开关：create-canvas / node-create / node-run / node-delete / canvas-delete 必须显式传 true 才会执行（默认不执行）' },
+          force: { type: 'boolean', description: 'canvas-delete 用：CLI 无删除画布命令，此项只用于语义对齐（当前不改变结果）' },
         },
         required: ['action'],
       },
@@ -55,7 +56,7 @@ export function canvasTools(service: CanvasService, deps: { maxCredits?: number 
         if (!(ACTIONS as readonly string[]).includes(action)) {
           throw new Error(`action 只能是 ${ACTIONS.join(' / ')}，收到的是「${String(args.action)}」`)
         }
-        const ignored = ignoredKeys(args, ['action', 'canvasId', 'type', 'status', 'query', 'limit', 'offset', 'name', 'model', 'prompt', 'count', 'mode', 'nodeIds', 'resourceIds', 'confirm'])
+        const ignored = ignoredKeys(args, ['action', 'canvasId', 'type', 'status', 'query', 'limit', 'offset', 'name', 'model', 'prompt', 'count', 'mode', 'nodeIds', 'resourceIds', 'confirm', 'force'])
         const tail = (text: string): string => (ignored.length === 0 ? text : `${text}\n（忽略未知参数：${ignored.join(', ')}）`)
 
         if (action === 'status') {
@@ -188,6 +189,38 @@ export function canvasTools(service: CanvasService, deps: { maxCredits?: number 
           const result = await service.download({ canvasId, resourceIds })
           if (result.ok !== true || result.data === undefined) throw new Error(result.message ?? '下载失败')
           return tail([`已下载 ${result.data.paths.length} 个：`, ...result.data.paths.map((file) => `- ${file}`)].join('\n'))
+        }
+
+        if (action === 'node-delete') {
+          const canvasId = typeof args.canvasId === 'string' ? args.canvasId : ''
+          const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter((v): v is string => typeof v === 'string' && v !== '') : []
+          if (nodeIds.length === 0) throw new Error('node-delete 需要 nodeIds')
+          const preview = await service.previewNodeDeletion({ canvasId, nodeIds })
+          if (preview.ok !== true || preview.data === undefined) throw new Error(preview.message ?? '拿不到删除清单，已中止')
+          const list = preview.data.nodes.map((node) => `- ${node.title}｜${node.type}｜${node.nodeId}（子节点 ${node.childCount}）`)
+          const totals = Object.entries(preview.data.totals).map(([key, value]) => `${key}=${value}`).join(' ')
+          if (args.confirm !== true) {
+            return tail(
+              [
+                `将要删除 ${preview.data.nodes.length} 个节点（**不可逆**，本次什么都没删）：`,
+                ...list,
+                ...(totals === '' ? [] : [`合计：${totals}`]),
+                '确认要删就再调一次并传 confirm:true。',
+              ].join('\n'),
+            )
+          }
+          const deleted = await service.deleteNodes({ canvasId, nodeIds, updateId: preview.data.updateId })
+          if (deleted.ok !== true || deleted.data === undefined) throw new Error(deleted.message ?? '删除失败')
+          return tail([`已删除 ${deleted.data.deleted.length} 个节点（不可逆）：`, ...deleted.data.deleted.map((id) => `- ${id}`)].join('\n'))
+        }
+
+        if (action === 'canvas-delete') {
+          if (args.confirm !== true) {
+            return tail('删除画布是不可逆的写操作：请先确认要删哪个（对一下 projectId），再调一次并传 confirm:true。')
+          }
+          const canvasId = typeof args.canvasId === 'string' ? args.canvasId : ''
+          const hint = await service.canvasDeleteHint(canvasId)
+          return tail(hint.message ?? '画布删除失败')
         }
 
         // login

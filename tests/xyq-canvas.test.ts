@@ -249,3 +249,64 @@ test('node-run：上限内 ⇒ quote → confirm → run，回产物绝对路径
   assert.ok(runCall.includes('--credit-token') && runCall.includes('tok-1'))
   assert.ok(runCall.includes('--wait'))
 })
+
+// ── 0.8.0：删除动作（先列清单，再 confirm，不可逆）────────────────────
+
+const PREVIEW_ENVELOPE = JSON.stringify({
+  schemaVersion: '2',
+  ok: false,
+  error: { code: 40018, message: 'This operation does not have the required approval.', diagnostics: [{ detail: 'not sent' }] },
+  deletionConfirmation: {
+    projectId: 'p-9',
+    nodeIds: ['n-7'],
+    updateId: 'u-1',
+    nodes: [{ nodeId: 'n-7', type: 'image', title: '角色立绘', childCount: 0, edgeCount: 0, referenceCount: 0 }],
+    totals: { nodeCount: 1, edgeCount: 0, referenceCount: 0 },
+  },
+})
+
+test('node-delete：不带 confirm 只列清单，一个删除请求都不发', async () => {
+  const h = makeHarness({ 'node delete': { code: 1, stdout: PREVIEW_ENVELOPE } })
+  const text = await toolOf(h).execute({ action: 'node-delete', canvasId: 'p-9', nodeIds: ['n-7'] })
+  assert.match(text, /将要删除 1 个节点/)
+  assert.match(text, /角色立绘/)
+  assert.match(text, /不可逆/)
+  assert.match(text, /confirm:true/)
+  assert.equal(h.calls.filter((args) => args[3] === 'confirm').length, 0, '预览阶段不许签凭证')
+  assert.equal(h.calls.filter((args) => args.includes('--delete-token')).length, 0, '预览阶段不许真删')
+})
+
+test('node-delete：confirm 后 预览 → confirm（拿 token）→ delete，回已删 id', async () => {
+  const h = makeHarness({
+    'node delete': [
+      { code: 1, stdout: PREVIEW_ENVELOPE },
+      { stdout: JSON.stringify({ ok: true, data: { deleteConfirmationToken: 'dt-1' } }) },
+      { stdout: JSON.stringify({ ok: true, data: { nodeIds: ['n-7'], savedDraftVersion: 4 } }) },
+    ],
+  })
+  const text = await toolOf(h).execute({ action: 'node-delete', canvasId: 'p-9', nodeIds: ['n-7'], confirm: true })
+  assert.match(text, /已删除 1 个节点/)
+  assert.match(text, /n-7/)
+  const confirmCall = h.calls.find((args) => args[3] === 'confirm')!
+  assert.deepEqual(confirmCall.slice(1, 4), ['node', 'delete', 'confirm'], 'confirm 必须紧跟 delete（子命令）')
+  assert.ok(confirmCall.includes('--update-id') && confirmCall.includes('u-1'))
+  const deleteCall = h.calls.find((args) => args.includes('--delete-token'))!
+  assert.ok(deleteCall.includes('dt-1'))
+  assert.ok(deleteCall.includes('--update-id') && deleteCall.includes('u-1'), '确认与执行必须复用同一个 updateId')
+})
+
+test('canvas-delete：CLI 没有删画布的命令 ⇒ 回网页地址，不假装成功', async () => {
+  const h = makeHarness({
+    'canvas ls': { stdout: JSON.stringify({ ok: true, data: { items: [{ projectId: 'p-9', name: '甲鱼', webUrl: 'https://jimeng.test/c/p-9' }] } }) },
+  })
+  const text = await toolOf(h).execute({ action: 'canvas-delete', canvasId: 'p-9', confirm: true })
+  assert.match(text, /没有删除画布的命令/)
+  assert.match(text, /https:\/\/jimeng\.test\/c\/p-9/)
+})
+
+test('canvas-delete：没有 confirm 时先拦下来（不可逆操作）', async () => {
+  const h = makeHarness({})
+  const text = await toolOf(h).execute({ action: 'canvas-delete', canvasId: 'p-9' })
+  assert.match(text, /不可逆/)
+  assert.equal(h.calls.length, 0)
+})

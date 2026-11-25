@@ -21,6 +21,9 @@ export interface CanvasEnvelope {
   ok?: boolean
   data?: unknown
   error?: { code?: number | string; message?: string; diagnostics?: Array<{ detail?: string }> }
+  /** 真机：
+ode delete（不带 token）会在**顶层**回这份删除清单（不在 data 里）。 */
+  deletionConfirmation?: unknown
 }
 
 export interface CanvasCliDeps {
@@ -65,6 +68,7 @@ export function parseCanvasEnvelope(stdout: string): CanvasEnvelope | undefined 
       if (typeof parsed.ok === 'boolean') envelope.ok = parsed.ok
       if ('data' in parsed) envelope.data = parsed.data
       if (parsed.error !== null && typeof parsed.error === 'object') envelope.error = parsed.error as CanvasEnvelope['error']
+      if (parsed.deletionConfirmation !== undefined) envelope.deletionConfirmation = parsed.deletionConfirmation
       return envelope
     } catch {
       /* 继续往上找 */
@@ -110,7 +114,7 @@ export function createCanvasCli(deps: CanvasCliDeps) {
      * 跑一条命令。**注意**：这里自动补 `--format json`（画布不认 `-j`），
      * 调用方只需要写子命令与参数。
      */
-    async call(args: string[], timeoutMs = 60_000): Promise<CanvasCallResult> {
+    async call(args: string[], timeoutMs = 60_000, options: { allowError?: boolean } = {}): Promise<CanvasCallResult> {
       const cli = locate()
       if (cli === undefined) {
         return {
@@ -129,7 +133,7 @@ export function createCanvasCli(deps: CanvasCliDeps) {
         return { message: `即梦画布没有返回可解析的 JSON：${raw.trim().slice(0, 240) || '（空输出）'}` }
       }
       const message = canvasErrorMessage(envelope, raw)
-      if (message !== undefined) return { message }
+      if (message !== undefined && options.allowError !== true) return { message }
       return { envelope }
     },
   }

@@ -4124,6 +4124,7 @@ function parseCanvasEnvelope(stdout) {
       if (typeof parsed.ok === "boolean") envelope.ok = parsed.ok;
       if ("data" in parsed) envelope.data = parsed.data;
       if (parsed.error !== null && typeof parsed.error === "object") envelope.error = parsed.error;
+      if (parsed.deletionConfirmation !== void 0) envelope.deletionConfirmation = parsed.deletionConfirmation;
       return envelope;
     } catch {
     }
@@ -4154,7 +4155,7 @@ function createCanvasCli(deps) {
      * 跑一条命令。**注意**：这里自动补 `--format json`（画布不认 `-j`），
      * 调用方只需要写子命令与参数。
      */
-    async call(args, timeoutMs = 6e4) {
+    async call(args, timeoutMs = 6e4, options = {}) {
       const cli = locate();
       if (cli === void 0) {
         return {
@@ -4172,7 +4173,7 @@ ${result.stderr}`;
         return { message: `\u5373\u68A6\u753B\u5E03\u6CA1\u6709\u8FD4\u56DE\u53EF\u89E3\u6790\u7684 JSON\uFF1A${raw.trim().slice(0, 240) || "\uFF08\u7A7A\u8F93\u51FA\uFF09"}` };
       }
       const message = canvasErrorMessage(envelope, raw);
-      if (message !== void 0) return { message };
+      if (message !== void 0 && options.allowError !== true) return { message };
       return { envelope };
     }
   };
@@ -4413,6 +4414,61 @@ function createCanvasService(deps) {
       }
       return { ok: true, data: { artifacts, ...credits === void 0 ? {} : { credits } } };
     },
+    /**
+     * 删除预览：`node delete`（不带 token）会回 `deletionConfirmation{nodes[],totals,updateId}`——
+     * 这就是"要删什么"的权威清单（标题/子节点数/引用数）。**不删任何东西**。
+     */
+    async previewNodeDeletion(input) {
+      if (input.nodeIds.length === 0) return { ok: false, message: "\u5220\u8282\u70B9\u9700\u8981 nodeIds" };
+      const args = ["node", "delete"];
+      for (const id of input.nodeIds) args.push("--node-id", id);
+      if (input.canvasId !== "") args.push("--project-id", input.canvasId);
+      const answered = await deps.cli.call([...args, "--yes"], 6e4, { allowError: true });
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const envelope = answered.envelope;
+      const confirmation = asRecord(envelope?.deletionConfirmation);
+      if (confirmation === void 0) {
+        return { ok: false, message: `\u6CA1\u62FF\u5230\u5220\u9664\u6E05\u5355\uFF1A${JSON.stringify(envelope ?? {}).slice(0, 240)}` };
+      }
+      const nodes = pickArray(confirmation.nodes, ["nodes"]).map((item) => ({
+        nodeId: str(item.nodeId),
+        title: str(item.title) || "(\u65E0\u6807\u9898)",
+        type: str(item.type),
+        childCount: typeof item.childCount === "number" ? item.childCount : 0
+      }));
+      const totalsRecord = asRecord(confirmation.totals) ?? {};
+      const totals = {};
+      for (const [key, value] of Object.entries(totalsRecord)) if (typeof value === "number") totals[key] = value;
+      return { ok: true, data: { updateId: str(confirmation.updateId), nodes, totals } };
+    },
+    /** 删节点：confirm（拿 deleteConfirmationToken）→ delete。**调用前必须先 preview**。 */
+    async deleteNodes(input) {
+      if (input.nodeIds.length === 0) return { ok: false, message: "\u5220\u8282\u70B9\u9700\u8981 nodeIds" };
+      if (input.updateId === "") return { ok: false, message: "\u5220\u8282\u70B9\u9700\u8981 updateId\uFF08\u6765\u81EA previewNodeDeletion\uFF09" };
+      const nodeArgs = [];
+      for (const id of input.nodeIds) nodeArgs.push("--node-id", id);
+      if (input.canvasId !== "") nodeArgs.push("--project-id", input.canvasId);
+      const confirmed = await deps.cli.call(["node", "delete", "confirm", ...nodeArgs, "--update-id", input.updateId, "--yes"], 6e4);
+      if (confirmed.message !== void 0) return { ok: false, message: confirmed.message };
+      const confirmData = asRecord(confirmed.envelope?.data);
+      const token = str(confirmData?.deleteConfirmationToken) || str(confirmData?.token);
+      if (token === "") return { ok: false, message: `\u786E\u8BA4\u5220\u9664\u7684\u56DE\u5305\u91CC\u6CA1\u6709 deleteConfirmationToken\uFF1A${JSON.stringify(confirmData ?? {}).slice(0, 200)}` };
+      const deleted = await deps.cli.call(["node", "delete", ...nodeArgs, "--update-id", input.updateId, "--delete-token", token, "--yes"], 12e4);
+      if (deleted.message !== void 0) return { ok: false, message: deleted.message };
+      const data = asRecord(deleted.envelope?.data);
+      const ids = Array.isArray(data?.nodeIds) ? (data?.nodeIds).filter((id) => typeof id === "string") : input.nodeIds;
+      return { ok: true, data: { deleted: ids } };
+    },
+    /** 画布删除：**CLI 没有这个命令**（canvas 只有 create/current/ls/use），只能回网页地址让用户自己删。 */
+    async canvasDeleteHint(projectId) {
+      const list = await this.canvases();
+      const target = list.ok === true ? list.data?.items.find((item) => item.projectId === projectId) : void 0;
+      return {
+        ok: false,
+        message: `\u5373\u68A6\u753B\u5E03 CLI \u6CA1\u6709\u5220\u9664\u753B\u5E03\u7684\u547D\u4EE4\uFF08\u53EA\u6709 create / current / ls / use\uFF09\uFF0C\u8FD9\u4E2A\u753B\u5E03\u5220\u4E0D\u4E86\u3002${target?.webUrl === void 0 ? "" : `\u8BF7\u5728\u7F51\u9875\u91CC\u5220\uFF1A${target.webUrl}`}`,
+        ...target?.webUrl === void 0 ? {} : { data: { webUrl: target.webUrl } }
+      };
+    },
     /** 单独下载画布产物（跑完没下到、或事后想再下）。 */
     download(input) {
       return downloadResources(input.canvasId, input.resourceIds);
@@ -4478,7 +4534,7 @@ function firstNodeId(data) {
 }
 
 // src/xyq/canvas/tools.ts
-var ACTIONS = ["status", "canvases", "current", "nodes", "login", "create-canvas", "node-create", "node-quote", "node-run", "node-download"];
+var ACTIONS = ["status", "canvases", "current", "nodes", "login", "create-canvas", "node-create", "node-quote", "node-run", "node-download", "node-delete", "canvas-delete"];
 function ignoredKeys3(args, known) {
   return Object.keys(args ?? {}).filter((key) => !known.includes(key));
 }
@@ -4504,7 +4560,8 @@ function canvasTools(service, deps = {}) {
           mode: { type: "string", enum: ["t2i", "i2i"], description: "node-create \u7528\uFF1A\u6587\u751F\u56FE/\u56FE\u751F\u56FE\uFF08\u9ED8\u8BA4 t2i\uFF09" },
           nodeIds: { type: "array", items: { type: "string" }, description: "node-quote / node-run \u7528\uFF1A\u8282\u70B9 id \u5217\u8868" },
           resourceIds: { type: "array", items: { type: "string" }, description: "node-download \u7528\uFF1A\u8D44\u6E90 id \u5217\u8868\uFF08node-run \u56DE\u7684\u90A3\u4E32\uFF09" },
-          confirm: { type: "boolean", description: "\u5199\u64CD\u4F5C\u5F00\u5173\uFF1Acreate-canvas / node-create / node-run \u5FC5\u987B\u663E\u5F0F\u4F20 true \u624D\u4F1A\u6267\u884C\uFF08\u9ED8\u8BA4\u4E0D\u6267\u884C\uFF09" }
+          confirm: { type: "boolean", description: "\u5199\u64CD\u4F5C\u5F00\u5173\uFF1Acreate-canvas / node-create / node-run / node-delete / canvas-delete \u5FC5\u987B\u663E\u5F0F\u4F20 true \u624D\u4F1A\u6267\u884C\uFF08\u9ED8\u8BA4\u4E0D\u6267\u884C\uFF09" },
+          force: { type: "boolean", description: "canvas-delete \u7528\uFF1ACLI \u65E0\u5220\u9664\u753B\u5E03\u547D\u4EE4\uFF0C\u6B64\u9879\u53EA\u7528\u4E8E\u8BED\u4E49\u5BF9\u9F50\uFF08\u5F53\u524D\u4E0D\u6539\u53D8\u7ED3\u679C\uFF09" }
         },
         required: ["action"]
       },
@@ -4515,7 +4572,7 @@ function canvasTools(service, deps = {}) {
         if (!ACTIONS.includes(action)) {
           throw new Error(`action \u53EA\u80FD\u662F ${ACTIONS.join(" / ")}\uFF0C\u6536\u5230\u7684\u662F\u300C${String(args.action)}\u300D`);
         }
-        const ignored = ignoredKeys3(args, ["action", "canvasId", "type", "status", "query", "limit", "offset", "name", "model", "prompt", "count", "mode", "nodeIds", "resourceIds", "confirm"]);
+        const ignored = ignoredKeys3(args, ["action", "canvasId", "type", "status", "query", "limit", "offset", "name", "model", "prompt", "count", "mode", "nodeIds", "resourceIds", "confirm", "force"]);
         const tail = (text) => ignored.length === 0 ? text : `${text}
 \uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
         if (action === "status") {
@@ -4635,6 +4692,36 @@ function canvasTools(service, deps = {}) {
           const result2 = await service.download({ canvasId, resourceIds });
           if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u4E0B\u8F7D\u5931\u8D25");
           return tail([`\u5DF2\u4E0B\u8F7D ${result2.data.paths.length} \u4E2A\uFF1A`, ...result2.data.paths.map((file) => `- ${file}`)].join("\n"));
+        }
+        if (action === "node-delete") {
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter((v) => typeof v === "string" && v !== "") : [];
+          if (nodeIds.length === 0) throw new Error("node-delete \u9700\u8981 nodeIds");
+          const preview = await service.previewNodeDeletion({ canvasId, nodeIds });
+          if (preview.ok !== true || preview.data === void 0) throw new Error(preview.message ?? "\u62FF\u4E0D\u5230\u5220\u9664\u6E05\u5355\uFF0C\u5DF2\u4E2D\u6B62");
+          const list = preview.data.nodes.map((node) => `- ${node.title}\uFF5C${node.type}\uFF5C${node.nodeId}\uFF08\u5B50\u8282\u70B9 ${node.childCount}\uFF09`);
+          const totals = Object.entries(preview.data.totals).map(([key, value]) => `${key}=${value}`).join(" ");
+          if (args.confirm !== true) {
+            return tail(
+              [
+                `\u5C06\u8981\u5220\u9664 ${preview.data.nodes.length} \u4E2A\u8282\u70B9\uFF08**\u4E0D\u53EF\u9006**\uFF0C\u672C\u6B21\u4EC0\u4E48\u90FD\u6CA1\u5220\uFF09\uFF1A`,
+                ...list,
+                ...totals === "" ? [] : [`\u5408\u8BA1\uFF1A${totals}`],
+                "\u786E\u8BA4\u8981\u5220\u5C31\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 confirm:true\u3002"
+              ].join("\n")
+            );
+          }
+          const deleted = await service.deleteNodes({ canvasId, nodeIds, updateId: preview.data.updateId });
+          if (deleted.ok !== true || deleted.data === void 0) throw new Error(deleted.message ?? "\u5220\u9664\u5931\u8D25");
+          return tail([`\u5DF2\u5220\u9664 ${deleted.data.deleted.length} \u4E2A\u8282\u70B9\uFF08\u4E0D\u53EF\u9006\uFF09\uFF1A`, ...deleted.data.deleted.map((id) => `- ${id}`)].join("\n"));
+        }
+        if (action === "canvas-delete") {
+          if (args.confirm !== true) {
+            return tail("\u5220\u9664\u753B\u5E03\u662F\u4E0D\u53EF\u9006\u7684\u5199\u64CD\u4F5C\uFF1A\u8BF7\u5148\u786E\u8BA4\u8981\u5220\u54EA\u4E2A\uFF08\u5BF9\u4E00\u4E0B projectId\uFF09\uFF0C\u518D\u8C03\u4E00\u6B21\u5E76\u4F20 confirm:true\u3002");
+          }
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const hint = await service.canvasDeleteHint(canvasId);
+          return tail(hint.message ?? "\u753B\u5E03\u5220\u9664\u5931\u8D25");
         }
         const result = await service.login();
         if (result.loggedIn) return tail("\u5373\u68A6\u753B\u5E03\u5DF2\u767B\u5F55\uFF08\u51ED\u636E\u5DF2\u843D\u76D8\uFF09\u3002");

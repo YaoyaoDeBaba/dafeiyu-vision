@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 109 条判据
+npm test            # 构建 + 113 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -562,3 +562,34 @@ resource download <resourceId> -o <dir>    → {"data":{"path":"…png","size":2
 - `node create` → `data.node.nodeId`（不是 `data.nodeId`），**且 `--title` 必填**；
 - `node quote` → `totalMaxCredits` / `items[].maxCredits`；
 - `node run` / `node show` → `items[].resources[].resourceId` + `resources[].creditsAmount`（**没有 URL**，要内容必须 `resource download`）。
+
+## 十三、删除动作（0.8.0）：先列清单，再 confirm
+
+写操作能建不能删会攒垃圾，0.8.0 补两个动作：
+
+| action | 行为 |
+|---|---|
+| `node-delete` | **不带 `confirm`**：只回「将要删除 N 个节点」清单（标题/类型/nodeId/子节点数 + 合计），一条删除请求都不发；带 `confirm:true`：清单 → `node delete confirm`（拿 `deleteConfirmationToken`）→ `node delete --delete-token` |
+| `canvas-delete` | **CLI 没有删画布的命令**（`canvas` 只有 create/current/ls/use）→ 如实回「删不了」+ 该画布的网页地址，让用户自己删；没有 `confirm:true` 先拦下来 |
+
+### 13.1 真机形状（node delete 是三步）
+
+```
+node delete --node-id … --yes                       → ok:false + **顶层** deletionConfirmation{nodes[{nodeId,title,childCount,…}], totals, updateId}
+node delete confirm --node-id … --update-id <u> --yes → data.deleteConfirmationToken
+node delete --node-id … --update-id <u> --delete-token <t> --yes → {nodeIds, savedDraftVersion}
+```
+要点：`deletionConfirmation` 在**信封顶层**（不在 `data` 里）；`confirm` 是 `node delete` 的**子命令**，位置要跟在 delete 后面；确认与执行必须复用同一个 `updateId`。
+
+### 13.2 字段名速查（画布，全部真机验证过）
+
+| 命令 | 取值 |
+|---|---|
+| `canvas create` | `data.project.projectId`（不是 `data.projectId`） |
+| `canvas ls` | `data.items[].projectId/name/webUrl` |
+| `canvas current` | `data.currentCanvas`（可能是 `null`） |
+| `node create image` | `data.node.nodeId`；**`--title` 必填** |
+| `node quote` | `totalMaxCredits` / `items[].maxCredits` |
+| `node run` / `node show` | `items[].resources[].resourceId` + `resources[].creditsAmount`（**没有 URL**，要内容必须 `resource download`） |
+| `resource download` | `data.path`（本地绝对路径）+ `size` / `sha256` |
+| `auth login`（已登录时） | `{"status":"reused","state":{"loggedIn":true,…}}`——按"已登录"处理，别再发授权 |

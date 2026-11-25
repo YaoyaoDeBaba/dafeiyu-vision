@@ -349,7 +349,69 @@ export function createCanvasService(deps: CanvasServiceDeps) {
       return { ok: true, data: { artifacts, ...(credits === undefined ? {} : { credits }) } }
     },
 
-    /** 单独下载画布产物（跑完没下到、或事后想再下）。 */
+    /**
+     * 删除预览：`node delete`（不带 token）会回 `deletionConfirmation{nodes[],totals,updateId}`——
+     * 这就是"要删什么"的权威清单（标题/子节点数/引用数）。**不删任何东西**。
+     */
+    async previewNodeDeletion(input: { canvasId: string; nodeIds: string[] }): Promise<
+      CanvasServiceResult<{ updateId: string; nodes: Array<{ nodeId: string; title: string; type: string; childCount: number }>; totals: Record<string, number> }>
+    > {
+      if (input.nodeIds.length === 0) return { ok: false, message: '删节点需要 nodeIds' }
+      const args = ['node', 'delete']
+      for (const id of input.nodeIds) args.push('--node-id', id)
+      if (input.canvasId !== '') args.push('--project-id', input.canvasId)
+      const answered = await deps.cli.call([...args, '--yes'], 60_000, { allowError: true })
+      if (answered.message !== undefined) return { ok: false, message: answered.message }
+      const envelope = answered.envelope as (Record<string, unknown> | undefined)
+      const confirmation = asRecord(envelope?.deletionConfirmation)
+      if (confirmation === undefined) {
+        // 没有 deletionConfirmation：可能是空清单/已不存在，把原始信封交出去
+        return { ok: false, message: `没拿到删除清单：${JSON.stringify(envelope ?? {}).slice(0, 240)}` }
+      }
+      const nodes = pickArray(confirmation.nodes, ['nodes']).map((item) => ({
+        nodeId: str(item.nodeId),
+        title: str(item.title) || '(无标题)',
+        type: str(item.type),
+        childCount: typeof item.childCount === 'number' ? item.childCount : 0,
+      }))
+      const totalsRecord = asRecord(confirmation.totals) ?? {}
+      const totals: Record<string, number> = {}
+      for (const [key, value] of Object.entries(totalsRecord)) if (typeof value === 'number') totals[key] = value
+      return { ok: true, data: { updateId: str(confirmation.updateId), nodes, totals } }
+    },
+
+    /** 删节点：confirm（拿 deleteConfirmationToken）→ delete。**调用前必须先 preview**。 */
+    async deleteNodes(input: { canvasId: string; nodeIds: string[]; updateId: string }): Promise<CanvasServiceResult<{ deleted: string[] }>> {
+      if (input.nodeIds.length === 0) return { ok: false, message: '删节点需要 nodeIds' }
+      if (input.updateId === '') return { ok: false, message: '删节点需要 updateId（来自 previewNodeDeletion）' }
+      // 注意顺序：`confirm` 是 `node delete` 的**子命令**，必须紧跟 delete（真机：`node delete confirm --node-id …`）
+      const nodeArgs: string[] = []
+      for (const id of input.nodeIds) nodeArgs.push('--node-id', id)
+      if (input.canvasId !== '') nodeArgs.push('--project-id', input.canvasId)
+      const confirmed = await deps.cli.call(['node', 'delete', 'confirm', ...nodeArgs, '--update-id', input.updateId, '--yes'], 60_000)
+      if (confirmed.message !== undefined) return { ok: false, message: confirmed.message }
+      const confirmData = asRecord(confirmed.envelope?.data)
+      const token = str(confirmData?.deleteConfirmationToken) || str(confirmData?.token)
+      if (token === '') return { ok: false, message: `确认删除的回包里没有 deleteConfirmationToken：${JSON.stringify(confirmData ?? {}).slice(0, 200)}` }
+      const deleted = await deps.cli.call(['node', 'delete', ...nodeArgs, '--update-id', input.updateId, '--delete-token', token, '--yes'], 120_000)
+      if (deleted.message !== undefined) return { ok: false, message: deleted.message }
+      const data = asRecord(deleted.envelope?.data)
+      const ids = Array.isArray(data?.nodeIds) ? (data?.nodeIds as unknown[]).filter((id): id is string => typeof id === 'string') : input.nodeIds
+      return { ok: true, data: { deleted: ids } }
+    },
+
+    /** 画布删除：**CLI 没有这个命令**（canvas 只有 create/current/ls/use），只能回网页地址让用户自己删。 */
+    async canvasDeleteHint(projectId: string): Promise<CanvasServiceResult<{ webUrl?: string }>> {
+      const list = await this.canvases()
+      const target = list.ok === true ? list.data?.items.find((item) => item.projectId === projectId) : undefined
+      return {
+        ok: false,
+        message:
+          `即梦画布 CLI 没有删除画布的命令（只有 create / current / ls / use），这个画布删不了。` +
+          `${target?.webUrl === undefined ? '' : `请在网页里删：${target.webUrl}`}`,
+        ...(target?.webUrl === undefined ? {} : { data: { webUrl: target.webUrl } }),
+      }
+    },    /** 单独下载画布产物（跑完没下到、或事后想再下）。 */
     download(input: { canvasId: string; resourceIds: string[] }): Promise<CanvasServiceResult<{ paths: string[] }>> {
       return downloadResources(input.canvasId, input.resourceIds)
     },
