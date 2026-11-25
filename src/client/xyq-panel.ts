@@ -22,6 +22,8 @@ export interface XyqView {
   defaultImageModel: string
   budget: { images: number; videos: number; maxVideoSeconds: number }
   freedom: 'explicit' | 'budgeted' | 'open'
+  /** 默认生成通道：调用方没传 channel 时用它（默认 xyq）。 */
+  defaultChannel?: 'xyq' | 'jimeng'
 }
 
 const BASE = '/api/dsh-remote-dafeiyu/xyq'
@@ -195,6 +197,18 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
                 h('span', { style: labelStyle, children: '单条视频最长秒数' }),
                 h('input', { type: 'number', min: 4, max: 30, value: String(cfg.budget.maxVideoSeconds), style: fieldStyle, onChange: (event: { target?: { value?: string } }) => setCfg({ ...cfg, budget: { ...cfg.budget, maxVideoSeconds: number(String(event?.target?.value ?? ''), cfg.budget.maxVideoSeconds) } }), onBlur: () => void save({ budget: cfg.budget }) }),
               ] }),
+            ] }),
+            h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' }, children: [
+              h('span', { style: labelStyle, children: '默认通道' }),
+              h('select', {
+                value: cfg.defaultChannel === 'jimeng' ? 'jimeng' : 'xyq',
+                style: { ...fieldStyle, width: 'auto' },
+                onChange: (event: { target?: { value?: string } }) => void save({ defaultChannel: String(event?.target?.value ?? 'xyq') }),
+                children: [
+                  h('option', { value: 'xyq', children: '小云雀（xyq，默认）' }),
+                  h('option', { value: 'jimeng', children: '即梦（jimeng）' }),
+                ],
+              }),
             ] }),
             h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' }, children: [
               h('span', { style: labelStyle, children: '调用自由度' }),

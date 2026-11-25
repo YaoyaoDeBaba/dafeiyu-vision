@@ -2842,7 +2842,8 @@ var DEFAULTS = {
   defaultVideoDurationSec: 4,
   defaultImageModel: "",
   budget: { images: 10, videos: 2, maxVideoSeconds: 10 },
-  freedom: "explicit"
+  freedom: "explicit",
+  defaultChannel: "xyq"
 };
 function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)) {
   return path11.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
@@ -2868,7 +2869,8 @@ function normalizeXyqConfig(raw) {
       videos: clampInt(budget.videos, 0, 50, DEFAULTS.budget.videos),
       maxVideoSeconds: clampInt(budget.maxVideoSeconds, 4, 30, DEFAULTS.budget.maxVideoSeconds)
     },
-    freedom
+    freedom,
+    defaultChannel: value.defaultChannel === "jimeng" ? "jimeng" : "xyq"
   };
 }
 function readXyqConfig(file) {
@@ -2900,7 +2902,8 @@ function viewXyqConfig(config) {
     defaultVideoDurationSec: config.defaultVideoDurationSec,
     defaultImageModel: config.defaultImageModel,
     budget: config.budget,
-    freedom: config.freedom
+    freedom: config.freedom,
+    defaultChannel: config.defaultChannel
   };
 }
 
@@ -3403,6 +3406,12 @@ ${result.stderr}`;
 }
 
 // src/xyq/routes.ts
+function channelFrom(value, deps) {
+  const fallback = deps.service.config().defaultChannel;
+  if (value === null || value.trim() === "") return { channel: fallback };
+  const id = normalizeChannelId(value);
+  return id === void 0 ? { channel: fallback, error: channelParamError(value) } : { channel: id };
+}
 var XYQ_CONFIG_ROUTE = "/api/dsh-remote-dafeiyu/xyq/config";
 var XYQ_STATUS_ROUTE = "/api/dsh-remote-dafeiyu/xyq/status";
 var XYQ_BALANCE_ROUTE = "/api/dsh-remote-dafeiyu/xyq/balance";
@@ -3486,12 +3495,23 @@ function xyqQueryHandler(kind, deps) {
         return;
       }
       if (kind === "balance") {
-        json2(response, 200, await deps.service.balance());
+        const picked2 = channelFrom(new URL(request.url ?? "/", "http://localhost").searchParams.get("channel"), deps);
+        if (picked2.error !== void 0) {
+          json2(response, 400, { ok: false, error: picked2.error });
+          return;
+        }
+        json2(response, 200, { ...await deps.service.balance(picked2.channel), channel: picked2.channel });
         return;
       }
       const url = new URL(request.url ?? "/", "http://localhost");
       const type = url.searchParams.get("type") === "image" ? "image" : "video";
-      json2(response, 200, await deps.service.models(type));
+      const picked = channelFrom(url.searchParams.get("channel"), deps);
+      if (picked.error !== void 0) {
+        json2(response, 400, { ok: false, error: picked.error });
+        return;
+      }
+      const models = await deps.service.models(type, picked.channel, { autoInstall: url.searchParams.get("autoInstall") === "true" });
+      json2(response, 200, { ...models, channel: picked.channel });
     } catch (error) {
       deps.log("\u5C0F\u4E91\u96C0\u67E5\u8BE2\u8DEF\u7531\u5931\u8D25", { kind, message: String(error?.message ?? error).slice(0, 160) });
       json2(response, 500, { ok: false, error: String(error?.message ?? error).slice(0, 200) });
@@ -3536,6 +3556,32 @@ function xyqGenerateHandler(deps) {
       } catch {
       }
       const sessionKey = typeof body.sessionKey === "string" && body.sessionKey !== "" ? body.sessionKey : "xyq-panel";
+      const picked = channelFrom(typeof body.channel === "string" ? body.channel : null, deps);
+      if (picked.error !== void 0) return json2(response, 400, { ok: false, error: picked.error });
+      if (picked.channel !== "xyq") {
+        const images = Array.isArray(body.images) ? body.images.filter((value) => typeof value === "string" && value !== "") : [];
+        const result2 = type === "video" ? await deps.service.generateVideo({
+          prompt,
+          model,
+          channel: picked.channel,
+          images,
+          outDir: deps.outDir,
+          ...typeof body.duration === "number" ? { duration: body.duration } : {},
+          ...typeof body.ratio === "string" ? { ratio: body.ratio } : {},
+          autoInstall: body.autoInstall === true
+        }) : await deps.service.generateImage({
+          prompt,
+          model,
+          channel: picked.channel,
+          images,
+          outDir: deps.outDir,
+          ...typeof body.ratio === "string" ? { ratio: body.ratio } : {},
+          ...typeof body.count === "number" ? { count: body.count } : {},
+          autoInstall: body.autoInstall === true
+        });
+        json2(response, result2.ok ? 200 : 502, { ...result2, channel: picked.channel, mode: "sync" });
+        return;
+      }
       const result = type === "video" ? await deps.service.startVideo({
         prompt,
         model,
@@ -3639,9 +3685,11 @@ function withIgnored(text, ignored) {
   return ignored.length === 0 ? text : `${text}
 \uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
 }
-function channelOf(args) {
-  const channel = normalizeChannelId(args.channel);
-  if (channel === void 0) throw new Error(channelParamError(args.channel));
+function channelOf(args, fallback = "xyq") {
+  const raw = args.channel;
+  if (raw === void 0 || raw === null || typeof raw === "string" && raw.trim() === "") return fallback;
+  const channel = normalizeChannelId(raw);
+  if (channel === void 0) throw new Error(channelParamError(raw));
   return channel;
 }
 function selfHealOf(args) {
@@ -3692,7 +3740,7 @@ function xyqTools(service, deps = {}) {
       async execute(args, exec) {
         const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
         if (prompt === "") throw new Error("\u9700\u8981 prompt\uFF08\u7528\u6237\u539F\u59CB\u63CF\u8FF0\uFF09");
-        const channel = channelOf(args);
+        const channel = channelOf(args, service.config().defaultChannel);
         const ignored = ignoredKeys2(args, ["prompt", "model", "images", "ratio", "count", "outDir", "channel", "autoInstall", "autoLogin"]);
         const heal = selfHealOf(args);
         const images = Array.isArray(args.images) ? args.images.filter((value) => typeof value === "string" && value !== "") : [];
@@ -3739,7 +3787,7 @@ function xyqTools(service, deps = {}) {
         const images = Array.isArray(args.images) ? args.images.filter((value) => typeof value === "string" && value !== "") : [];
         const result = await service.generateVideo({
           prompt,
-          channel: channelOf(args),
+          channel: channelOf(args, service.config().defaultChannel),
           autoInstall: heal.autoInstall,
           autoLogin: heal.autoLogin,
           ...typeof args.model === "string" && args.model !== "" ? { model: args.model } : {},
@@ -3784,7 +3832,7 @@ function xyqTools(service, deps = {}) {
       async execute(args) {
         const kind = args.type === "image" ? "image" : "video";
         const ignored = ignoredKeys2(args, ["type", "channel", "autoInstall", "autoLogin"]);
-        const result = await service.models(kind, channelOf(args), selfHealOf(args));
+        const result = await service.models(kind, channelOf(args, service.config().defaultChannel), selfHealOf(args));
         if (!result.ok) throw new Error(result.message ?? "\u67E5\u8BE2\u6A21\u578B\u5931\u8D25");
         const list = result.models ?? [];
         const body = list.length === 0 ? "\uFF08\u6CA1\u6709\u67E5\u5230\u6A21\u578B\uFF09" : list.map((model) => `- ${model.name}\uFF08${model.key}\uFF09`).join("\n");

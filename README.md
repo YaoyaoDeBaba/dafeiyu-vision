@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 89 条判据
+npm test            # 构建 + 91 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -469,3 +469,12 @@ web_image_gen({ prompt: '一只戴红帽的蓝色小鲸鱼，扁平插画风，�
 - **即梦已装未登录**：`credit get` 返回 `AUTH_FAILED`（实测），工具会给出 login 命令；登录后第一次真实出图要复核
   `data` 里产物字段名（当前是防御式解析：扫 JSON 里带媒体后缀的字符串）。
 - **设置页 / `/xyq/*` 路由还没有通道开关**：这一版只让 agent 侧能选 channel，手机与面板仍走云雀（下一版再开）。
+
+### 10.5 默认通道开关（0.5.0）
+
+设置页「鲸鱼做梦」多了一栏 **默认通道**（`xyq` / `jimeng`），落在 `xyq.json` 的 `defaultChannel`：
+
+- 调用方（工具、`/xyq/generate`、`/xyq/models`、`/xyq/balance`）**没传 `channel` 时**用它；默认 `xyq`，老行为一字不变；
+- 传了显式 `channel` 仍以参数为准；传了不认识的值 ⇒ 工具抛中文、路由回 400（不静默回落）；
+- 路由侧：`/xyq/generate` 走即梦时**同步**返回（它的一次性命令自带 `--wait`），回包多带 `mode:'sync'` 与 `files`；云雀那条仍是 threadId 两段式；
+- `/xyq/models|balance` 支持 `?channel=`，模型列表按通道各查各的（两条通道模型名不通用）。

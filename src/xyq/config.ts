@@ -15,6 +15,8 @@ import path from 'node:path'
 // 现在用本包 `../paths.js` 里逐字照抄的那一份（派生规则一字未改）。
 import { resolveDshHome } from '../paths.js'
 
+import type { ChannelId } from './channel.js'
+
 export type XyqFreedom = 'explicit' | 'budgeted' | 'open'
 
 export interface XyqConfig {
@@ -26,6 +28,11 @@ export interface XyqConfig {
   defaultImageModel: string
   budget: { images: number; videos: number; maxVideoSeconds: number }
   freedom: XyqFreedom
+  /**
+   * 默认生成通道：调用方**没传** `channel` 时用它（默认 `xyq` = 老行为一字不变）。
+   * 设置页那颗开关改的就是它——手机端/面板走同一条路由，也就能选即梦了。
+   */
+  defaultChannel: ChannelId
 }
 
 const DEFAULTS: XyqConfig = {
@@ -37,6 +44,7 @@ const DEFAULTS: XyqConfig = {
   defaultImageModel: '',
   budget: { images: 10, videos: 2, maxVideoSeconds: 10 },
   freedom: 'explicit',
+  defaultChannel: 'xyq',
 }
 
 export function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)): string {
@@ -66,6 +74,7 @@ export function normalizeXyqConfig(raw: unknown): XyqConfig {
       maxVideoSeconds: clampInt(budget.maxVideoSeconds, 4, 30, DEFAULTS.budget.maxVideoSeconds),
     },
     freedom,
+    defaultChannel: value.defaultChannel === 'jimeng' ? 'jimeng' : 'xyq',
   }
 }
 
@@ -102,6 +111,7 @@ export function viewXyqConfig(config: XyqConfig): Record<string, unknown> {
     defaultImageModel: config.defaultImageModel,
     budget: config.budget,
     freedom: config.freedom,
+    defaultChannel: config.defaultChannel,
   }
 }
 

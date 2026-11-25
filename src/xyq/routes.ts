@@ -9,6 +9,18 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // 现在用本包 `../http/guards.js` 里逐字照抄的那一份（独立包不能引本体代码）。
 import { applyCors, preflight, hostIsLoopback, originIsLoopbackOrAbsent } from '../http/guards.js'
 import type { XyqService } from './service.js'
+import { channelParamError, normalizeChannelId, type ChannelId } from './channel.js'
+
+/**
+ * 路由上的 channel 解析：**没传就用设置里的默认通道**（默认 xyq）。
+ * 传了不认识的 → 400 中文原因（不静默回落，免得"以为在跑即梦、其实在跑云雀"）。
+ */
+function channelFrom(value: string | null, deps: { service: XyqService }): { channel: ChannelId; error?: string } {
+  const fallback = deps.service.config().defaultChannel
+  if (value === null || value.trim() === '') return { channel: fallback }
+  const id = normalizeChannelId(value)
+  return id === undefined ? { channel: fallback, error: channelParamError(value) } : { channel: id }
+}
 
 export const XYQ_CONFIG_ROUTE = '/api/dsh-remote-dafeiyu/xyq/config'
 export const XYQ_STATUS_ROUTE = '/api/dsh-remote-dafeiyu/xyq/status'
@@ -106,12 +118,23 @@ export function xyqQueryHandler(kind: 'status' | 'balance' | 'models', deps: Xyq
         return
       }
       if (kind === 'balance') {
-        json(response, 200, await deps.service.balance())
+        const picked = channelFrom(new URL(request.url ?? '/', 'http://localhost').searchParams.get('channel'), deps)
+        if (picked.error !== undefined) {
+          json(response, 400, { ok: false, error: picked.error })
+          return
+        }
+        json(response, 200, { ...(await deps.service.balance(picked.channel)), channel: picked.channel })
         return
       }
       const url = new URL(request.url ?? '/', 'http://localhost')
       const type = url.searchParams.get('type') === 'image' ? 'image' : 'video'
-      json(response, 200, await deps.service.models(type))
+      const picked = channelFrom(url.searchParams.get('channel'), deps)
+      if (picked.error !== undefined) {
+        json(response, 400, { ok: false, error: picked.error })
+        return
+      }
+      const models = await deps.service.models(type, picked.channel, { autoInstall: url.searchParams.get('autoInstall') === 'true' })
+      json(response, 200, { ...models, channel: picked.channel })
     } catch (error) {
       deps.log('小云雀查询路由失败', { kind, message: String((error as Error)?.message ?? error).slice(0, 160) })
       json(response, 500, { ok: false, error: String((error as Error)?.message ?? error).slice(0, 200) })
@@ -161,6 +184,39 @@ export function xyqGenerateHandler(deps: XyqRouteDeps) {
         /* 目录删了就删了，下载时会报错 */
       }
       const sessionKey = typeof body.sessionKey === 'string' && body.sessionKey !== '' ? body.sessionKey : 'xyq-panel'
+      const picked = channelFrom(typeof body.channel === 'string' ? body.channel : null, deps)
+      if (picked.error !== undefined) return json(response, 400, { ok: false, error: picked.error })
+      /*
+       * 即梦通道没有「提交→再轮询」两段：它的一次性命令自带 `--wait`，所以这里**同步**跑完再回文件。
+       * 返回形状多带 `mode:'sync'` 与 `files`，面板/手机按这个分支处理（云雀那条仍然是 threadId）。
+       */
+      if (picked.channel !== 'xyq') {
+        const images = Array.isArray(body.images) ? body.images.filter((value): value is string => typeof value === 'string' && value !== '') : []
+        const result =
+          type === 'video'
+            ? await deps.service.generateVideo({
+                prompt,
+                model,
+                channel: picked.channel,
+                images,
+                outDir: deps.outDir,
+                ...(typeof body.duration === 'number' ? { duration: body.duration } : {}),
+                ...(typeof body.ratio === 'string' ? { ratio: body.ratio } : {}),
+                autoInstall: body.autoInstall === true,
+              })
+            : await deps.service.generateImage({
+                prompt,
+                model,
+                channel: picked.channel,
+                images,
+                outDir: deps.outDir,
+                ...(typeof body.ratio === 'string' ? { ratio: body.ratio } : {}),
+                ...(typeof body.count === 'number' ? { count: body.count } : {}),
+                autoInstall: body.autoInstall === true,
+              })
+        json(response, result.ok ? 200 : 502, { ...result, channel: picked.channel, mode: 'sync' })
+        return
+      }
       const result =
         type === 'video'
           ? await deps.service.startVideo({

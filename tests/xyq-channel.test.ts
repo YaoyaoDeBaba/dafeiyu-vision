@@ -16,6 +16,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createXyqService } from '../src/xyq/service.js'
+import { normalizeXyqConfig } from '../src/xyq/config.js'
 import { createJimengService } from '../src/xyq/jimeng/service.js'
 import { locateJimengCli } from '../src/xyq/jimeng/cli.js'
 import { normalizeChannelId } from '../src/xyq/channel.js'
@@ -456,4 +457,44 @@ test('即梦模型解析：信封字段是 data.models（实测形状），不�
   } finally {
     h.cleanup()
   }
+})
+
+// ── 0.5.0：默认通道（设置页开关）──────────────────────────────────────
+
+test('默认通道：不传 channel 时按设置走——默认 xyq，改成 jimeng 后走即梦', async () => {
+  const h = makeHarness({
+    xyq: {
+      'generate-video': { stdout: JSON.stringify({ thread_id: 't1', run_id: 'r1' }) },
+      'query-result': { stdout: JSON.stringify({ status: 'succeeded', videos: [{ output_path: 'D:/out/xyq.mp4' }] }) },
+    },
+    jimeng: {
+      'generate-video': okEnvelope({ files: [{ path: 'D:/out/jimeng.mp4' }] }),
+      credit: okEnvelope({ balance: 652 }),
+    },
+  })
+  try {
+    // ① 默认：不传 channel ⇒ 云雀（老行为）
+    const first = await h.service.generateVideo({ prompt: '第一镜', model: 'Seedance_2.0_mini_lite', duration: 4 })
+    assert.equal(first.ok, true)
+    assert.equal(h.jimengCalls.length, 0, '默认通道时不许碰即梦')
+
+    // ② 设置页把默认通道改成即梦
+    h.service.update({ defaultChannel: 'jimeng' })
+    const tools = xyqTools(h.service)
+    const videoTool = tools.find((tool) => tool.name === 'generate_video') as {
+      execute: (args: Record<string, unknown>) => Promise<string>
+    }
+    const text = await videoTool.execute({ prompt: '第二镜', model: 'seedance_2.0' })
+    assert.match(text, /生成完成/)
+    assert.ok(h.jimengCalls.some((args) => args[1] === 'generate-video'), '改成 jimeng 后工具不传 channel 也应走即梦')
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('配置：defaultChannel 只认 xyq / jimeng，脏值回落 xyq', () => {
+  assert.equal(normalizeXyqConfig({}).defaultChannel, 'xyq')
+  assert.equal(normalizeXyqConfig({ defaultChannel: 'jimeng' }).defaultChannel, 'jimeng')
+  assert.equal(normalizeXyqConfig({ defaultChannel: 'kuake' }).defaultChannel, 'xyq')
+  assert.equal(normalizeXyqConfig({ defaultChannel: 1 }).defaultChannel, 'xyq')
 })

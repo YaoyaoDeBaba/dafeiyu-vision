@@ -28,12 +28,15 @@ function withIgnored(text: string, ignored: string[]): string {
 }
 
 /**
- * 工具入参里的 channel → ChannelId；传了不认识的**当场抛中文**（不静默回落到云雀）。
- * 缺省/空串 = 'xyq'：老调用一个字都不用改。
+ * 工具入参里的 channel → ChannelId。
+ * - **没传 / 空串** ⇒ 用 `fallback`（= 设置页里那颗「默认通道」，默认 `xyq`，老行为不变）；
+ * - 传了不认识的 ⇒ 当场抛中文（不静默回落到默认）。
  */
-function channelOf(args: Record<string, unknown>): 'xyq' | 'jimeng' {
-  const channel = normalizeChannelId(args.channel)
-  if (channel === undefined) throw new Error(channelParamError(args.channel))
+function channelOf(args: Record<string, unknown>, fallback: 'xyq' | 'jimeng' = 'xyq'): 'xyq' | 'jimeng' {
+  const raw = args.channel
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) return fallback
+  const channel = normalizeChannelId(raw)
+  if (channel === undefined) throw new Error(channelParamError(raw))
   return channel
 }
 
@@ -100,7 +103,7 @@ export function xyqTools(service: XyqService, deps: XyqToolsDeps = {}): Array<Re
       async execute(args: Record<string, unknown>, exec: unknown): Promise<string> {
         const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
         if (prompt === '') throw new Error('需要 prompt（用户原始描述）')
-        const channel = channelOf(args)
+        const channel = channelOf(args, service.config().defaultChannel)
         const ignored = ignoredKeys(args, ['prompt', 'model', 'images', 'ratio', 'count', 'outDir', 'channel', 'autoInstall', 'autoLogin'])
         const heal = selfHealOf(args)
         const images = Array.isArray(args.images) ? args.images.filter((value): value is string => typeof value === 'string' && value !== '') : []
@@ -150,7 +153,7 @@ export function xyqTools(service: XyqService, deps: XyqToolsDeps = {}): Array<Re
         const images = Array.isArray(args.images) ? args.images.filter((value): value is string => typeof value === 'string' && value !== '') : []
         const result = await service.generateVideo({
           prompt,
-          channel: channelOf(args),
+          channel: channelOf(args, service.config().defaultChannel),
           autoInstall: heal.autoInstall,
           autoLogin: heal.autoLogin,
           ...(typeof args.model === 'string' && args.model !== '' ? { model: args.model } : {}),
@@ -198,7 +201,7 @@ export function xyqTools(service: XyqService, deps: XyqToolsDeps = {}): Array<Re
       async execute(args: Record<string, unknown>): Promise<string> {
         const kind = args.type === 'image' ? 'image' : 'video'
         const ignored = ignoredKeys(args, ['type', 'channel', 'autoInstall', 'autoLogin'])
-        const result = await service.models(kind, channelOf(args), selfHealOf(args))
+        const result = await service.models(kind, channelOf(args, service.config().defaultChannel), selfHealOf(args))
         if (!result.ok) throw new Error(result.message ?? '查询模型失败')
         const list = result.models ?? []
         const body = list.length === 0 ? '（没有查到模型）' : list.map((model) => `- ${model.name}（${model.key}）`).join('\n')
