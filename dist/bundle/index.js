@@ -183,16 +183,16 @@ function promptOf(config, image) {
   const custom = typeof image.prompt === "string" ? image.prompt.trim() : "";
   return custom !== "" ? custom : config.prompt;
 }
-function deepGet(value, path15) {
+function deepGet(value, path16) {
   let cursor = value;
-  for (const key of path15) {
+  for (const key of path16) {
     if (cursor === null || typeof cursor !== "object") return void 0;
     cursor = cursor[key];
   }
   return cursor;
 }
-function splitPath(path15) {
-  return String(path15 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
+function splitPath(path16) {
+  return String(path16 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
 }
 function textFrom(value) {
   if (typeof value === "string") return value.trim();
@@ -918,8 +918,8 @@ async function launchCdpBrowser(options) {
       try {
         const shot = await call("Page.captureScreenshot", { format: "png" }, 15e3);
         if (shot?.data) {
-          const fs10 = await import("node:fs");
-          fs10.writeFileSync(file, Buffer.from(shot.data, "base64"));
+          const fs11 = await import("node:fs");
+          fs11.writeFileSync(file, Buffer.from(shot.data, "base64"));
         }
       } catch {
       }
@@ -2271,7 +2271,7 @@ function startVision(ctx, deps) {
 }
 
 // src/xyq/start.ts
-import path14 from "node:path";
+import path15 from "node:path";
 
 // src/xyq/cli.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -2843,7 +2843,8 @@ var DEFAULTS = {
   defaultImageModel: "",
   budget: { images: 10, videos: 2, maxVideoSeconds: 10 },
   freedom: "explicit",
-  defaultChannel: "xyq"
+  defaultChannel: "xyq",
+  canvasMaxCredits: 50
 };
 function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)) {
   return path11.join(dshHome, "storages", "dsh-remote-dafeiyu", "xyq.json");
@@ -2870,7 +2871,8 @@ function normalizeXyqConfig(raw) {
       maxVideoSeconds: clampInt(budget.maxVideoSeconds, 4, 30, DEFAULTS.budget.maxVideoSeconds)
     },
     freedom,
-    defaultChannel: value.defaultChannel === "jimeng" ? "jimeng" : "xyq"
+    defaultChannel: value.defaultChannel === "jimeng" ? "jimeng" : "xyq",
+    canvasMaxCredits: clampInt(value.canvasMaxCredits, 0, 5e3, DEFAULTS.canvasMaxCredits)
   };
 }
 function readXyqConfig(file) {
@@ -2903,7 +2905,8 @@ function viewXyqConfig(config) {
     defaultImageModel: config.defaultImageModel,
     budget: config.budget,
     freedom: config.freedom,
-    defaultChannel: config.defaultChannel
+    defaultChannel: config.defaultChannel,
+    canvasMaxCredits: config.canvasMaxCredits
   };
 }
 
@@ -3631,14 +3634,14 @@ function xyqFileHandler(deps) {
     const url = new URL(request.url ?? "/", "http://localhost");
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
-    const path15 = await import("node:path");
-    const fs10 = await import("node:fs");
-    const resolved = path15.resolve(target);
-    const root = path15.resolve(deps.outDir);
-    if (!resolved.startsWith(root + path15.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
+    const path16 = await import("node:path");
+    const fs11 = await import("node:fs");
+    const resolved = path16.resolve(target);
+    const root = path16.resolve(deps.outDir);
+    if (!resolved.startsWith(root + path16.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
-      const data = fs10.readFileSync(resolved);
-      const ext = path15.extname(resolved).toLowerCase();
+      const data = fs11.readFileSync(resolved);
+      const ext = path16.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
       if (request.method === "HEAD") response.end();
@@ -4176,6 +4179,9 @@ ${result.stderr}`;
 }
 
 // src/xyq/canvas/service.ts
+import fs10 from "node:fs";
+import os6 from "node:os";
+import path14 from "node:path";
 function asRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
@@ -4192,6 +4198,26 @@ function pickArray(value, keys) {
 }
 function createCanvasService(deps) {
   const waitMs = deps.loginWaitMs ?? 12e4;
+  async function downloadResources(canvasId, resourceIds) {
+    if (resourceIds.length === 0) return { ok: false, message: "download \u9700\u8981 resourceIds\uFF08\u6765\u81EA node-run / node-show\uFF09" };
+    const dir = deps.outDir ?? path14.join(os6.homedir(), "jimeng-output");
+    try {
+      fs10.mkdirSync(dir, { recursive: true });
+    } catch {
+    }
+    const paths = [];
+    for (const resourceId of resourceIds) {
+      const args = ["resource", "download", resourceId, "--output", dir];
+      if (canvasId !== "") args.push("--project-id", canvasId);
+      const answered = await deps.cli.call(args, 12e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message, ...paths.length === 0 ? {} : { data: { paths } } };
+      const data = asRecord(answered.envelope?.data);
+      const file = str(data?.path);
+      if (file !== "") paths.push(file);
+    }
+    if (paths.length === 0) return { ok: false, message: "\u4E0B\u8F7D\u56DE\u5305\u91CC\u6CA1\u6709 path \u5B57\u6BB5" };
+    return { ok: true, data: { paths } };
+  }
   return {
     available() {
       return deps.cli.path() !== void 0;
@@ -4268,6 +4294,8 @@ function createCanvasService(deps) {
       const started = await deps.cli.call(["auth", "login", "--no-browser"], 6e4);
       if (started.message !== void 0) return { ok: false, loggedIn: false, message: started.message };
       const data = asRecord(started.envelope?.data);
+      const reuseState = asRecord(data?.state);
+      if (data?.status === "reused" && reuseState?.loggedIn === true) return { ok: true, loggedIn: true };
       const deviceCode = str(data?.deviceCode) || str(data?.device_code);
       const link = str(data?.verificationUriComplete) || str(data?.verificationUri) || str(data?.url);
       if (deviceCode === "") {
@@ -4296,16 +4324,165 @@ function createCanvasService(deps) {
         ...link === "" ? {} : { link },
         ...loggedIn ? {} : { message: "\u6388\u6743\u7B49\u5F85\u7ED3\u675F\u4F46\u6CA1\u68C0\u51FA\u767B\u5F55\u6001\uFF1A\u70B9\u94FE\u63A5\u540E\u53EF\u80FD\u8D85\u65F6\u4E86\uFF0C\u518D\u8C03\u4E00\u6B21 action=login\u3002" }
       };
+    },
+    // ── 写操作（0.7.0）：一律 confirm → quote → confirm(credit ceiling) → run ──────
+    /**
+     * 建画布。**不花积分，但会在用户账号里留东西**，所以工具层要求 `confirm:true`。
+     * 一次调用只建一个（不做批量循环）。
+     */
+    async createCanvas(name) {
+      const trimmed = name.trim();
+      if (trimmed === "") return { ok: false, message: "\u5EFA\u753B\u5E03\u9700\u8981 name\uFF081~40 \u5B57\uFF0C\u5EFA\u8BAE\u5E26\u65E5\u671F\u4FBF\u4E8E\u4E8B\u540E\u6E05\u7406\uFF09" };
+      const answered = await deps.cli.call(["canvas", "create", trimmed], 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      const project = asRecord(data?.project);
+      const projectId = str(project?.projectId) || str(data?.projectId) || str(data?.project_id) || str(data?.id);
+      if (projectId === "") return { ok: false, message: `\u5EFA\u753B\u5E03\u7684\u56DE\u5305\u91CC\u6CA1\u6709 projectId\uFF1A${JSON.stringify(answered.envelope?.data ?? {}).slice(0, 200)}` };
+      return { ok: true, data: { projectId, name: trimmed } };
+    },
+    /** 建一个图片节点（**不运行**，不花积分）。返回 nodeId；运行要另走 quote → run。 */
+    async createImageNode(input) {
+      if (input.canvasId.trim() === "") return { ok: false, message: "\u5EFA\u8282\u70B9\u9700\u8981 canvasId\uFF08\u5148\u7528 action=canvases \u62FF projectId\uFF09" };
+      if (input.model.trim() === "") return { ok: false, message: '\u5EFA\u8282\u70B9\u9700\u8981 model\uFF08\u5148\u7528 xyq_models({type:"image", channel:"jimeng"}) \u67E5 key\uFF09' };
+      if (input.prompt.trim() === "") return { ok: false, message: "\u5EFA\u8282\u70B9\u9700\u8981 prompt" };
+      const title = (input.title ?? input.prompt).trim().slice(0, 24) || "\u753B\u5E03\u8282\u70B9";
+      const args = ["node", "create", "image", "--project-id", input.canvasId, "--title", title, "--model", input.model, "--prompt", input.prompt];
+      if (typeof input.count === "number" && input.count > 0) args.push("--count", String(Math.round(input.count)));
+      args.push("--mode", input.mode ?? "t2i");
+      const answered = await deps.cli.call(args, 9e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      const nodeRecord = asRecord(data?.node);
+      const nodeId = str(nodeRecord?.nodeId) || str(data?.nodeId) || str(data?.node_id) || firstNodeId(data);
+      if (nodeId === "") return { ok: false, message: `\u5EFA\u8282\u70B9\u7684\u56DE\u5305\u91CC\u6CA1\u6709 nodeId\uFF1A${JSON.stringify(data ?? {}).slice(0, 220)}` };
+      return { ok: true, data: { nodeId, model: input.model } };
+    },
+    /** 报价：预计积分（不扣费）。 */
+    async quote(input) {
+      if (input.nodeIds.length === 0) return { ok: false, message: "\u62A5\u4EF7\u9700\u8981 nodeIds\uFF08\u81F3\u5C11\u4E00\u4E2A\uFF09" };
+      const args = ["node", "quote"];
+      for (const id of input.nodeIds) args.push("--node-id", id);
+      if (input.canvasId !== "") args.push("--project-id", input.canvasId);
+      const answered = await deps.cli.call(args, 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const credits = pickCredits(answered.envelope?.data);
+      if (credits === void 0) {
+        return { ok: false, message: `\u62A5\u4EF7\u56DE\u5305\u91CC\u6CA1\u6709\u79EF\u5206\u5B57\u6BB5\uFF1A${JSON.stringify(answered.envelope?.data ?? {}).slice(0, 220)}` };
+      }
+      return { ok: true, data: { credits, raw: JSON.stringify(answered.envelope?.data ?? {}).slice(0, 400) } };
+    },
+    /** 批准积分上限，换短期凭证（不扣费）。 */
+    async confirm(input) {
+      const args = ["node", "confirm"];
+      for (const id of input.nodeIds) args.push("--node-id", id);
+      if (input.canvasId !== "") args.push("--project-id", input.canvasId);
+      args.push("--credit-ceiling", String(Math.max(0, Math.round(input.ceiling))));
+      const answered = await deps.cli.call(args, 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = asRecord(answered.envelope?.data);
+      const token = str(data?.creditConfirmationToken) || str(data?.creditToken) || str(data?.token);
+      if (token === "") return { ok: false, message: `\u6279\u51C6\u56DE\u5305\u91CC\u6CA1\u6709 creditConfirmationToken\uFF1A${JSON.stringify(data ?? {}).slice(0, 220)}` };
+      return { ok: true, data: { token } };
+    },
+    /**
+     * 跑节点（**这一步才扣积分**）：`node run --credit-token … --wait`。
+     * 产物路径从 `data` 里捞（与短剧同一套防御式提取），并把本次实扣积分带回（有就带）。
+     */
+    async run(input) {
+      const args = ["node", "run"];
+      for (const id of input.nodeIds) args.push("--node-id", id);
+      if (input.canvasId !== "") args.push("--project-id", input.canvasId);
+      args.push("--credit-token", input.token, "--wait", "--timeout", "10m");
+      const answered = await deps.cli.call(args, (input.timeoutMs ?? 6e5) + 6e4);
+      if (answered.message !== void 0) return { ok: false, message: answered.message };
+      const data = answered.envelope?.data;
+      const resources = collectResources(data);
+      const credits = pickCredits(data);
+      const artifacts = [];
+      for (const resource of resources) {
+        const downloaded = await downloadResources(input.canvasId, [resource.resourceId]);
+        if (downloaded.ok === true && downloaded.data !== void 0) artifacts.push(...downloaded.data.paths);
+      }
+      if (artifacts.length === 0) {
+        const ids = resources.map((item) => item.resourceId);
+        return {
+          ok: false,
+          message: ids.length === 0 ? `\u8DD1\u5B8C\u4E86\u4F46\u6CA1\u62FF\u5230\u4EA7\u7269\uFF1A${JSON.stringify(data ?? {}).slice(0, 240)}` : `\u8DD1\u5B8C\u4E86\uFF08\u5B9E\u6263 ${credits ?? "\u672A\u77E5"} \u79EF\u5206\uFF09\uFF0C\u4F46\u4E0B\u8F7D\u5931\u8D25\uFF1B\u4EA7\u7269 resourceId\uFF1A${ids.join(", ")}\u3002\u53EF\u7A0D\u540E\u7528 action:"node-download" \u518D\u4E0B\u3002`
+        };
+      }
+      return { ok: true, data: { artifacts, ...credits === void 0 ? {} : { credits } } };
+    },
+    /** 单独下载画布产物（跑完没下到、或事后想再下）。 */
+    download(input) {
+      return downloadResources(input.canvasId, input.resourceIds);
     }
   };
 }
+function collectResources(node, depth = 0) {
+  const out = [];
+  const walk = (value, d) => {
+    if (d > 8 || value === null || value === void 0) return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, d + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const record = value;
+    const id = str(record.resourceId);
+    if (id !== "") {
+      const credits = typeof record.creditsAmount === "number" ? record.creditsAmount : void 0;
+      out.push({ resourceId: id, ...credits === void 0 ? {} : { credits } });
+      return;
+    }
+    for (const child of Object.values(record)) walk(child, d + 1);
+  };
+  walk(node, depth);
+  return out;
+}
+function pickCredits(node, depth = 0) {
+  const KEYS = ["totalMaxCredits", "maxCredits", "creditsAmount", "credits", "totalCredits", "credit", "cost", "price", "estimatedCredits", "total"];
+  if (depth > 6 || node === null || node === void 0) return void 0;
+  if (typeof node === "object" && !Array.isArray(node)) {
+    const record = node;
+    for (const key of KEYS) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+    }
+    for (const value of Object.values(record)) {
+      const found = pickCredits(value, depth + 1);
+      if (found !== void 0) return found;
+    }
+    return void 0;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = pickCredits(item, depth + 1);
+      if (found !== void 0) return found;
+    }
+  }
+  return void 0;
+}
+function firstNodeId(data) {
+  if (data === void 0) return "";
+  const nodes = data.nodes;
+  if (Array.isArray(nodes)) {
+    for (const node of nodes) {
+      const record = asRecord(node);
+      const id = str(record?.nodeId) || str(record?.node_id) || str(record?.id);
+      if (id !== "") return id;
+    }
+  }
+  return "";
+}
 
 // src/xyq/canvas/tools.ts
-var ACTIONS = ["status", "canvases", "current", "nodes", "login"];
+var ACTIONS = ["status", "canvases", "current", "nodes", "login", "create-canvas", "node-create", "node-quote", "node-run", "node-download"];
 function ignoredKeys3(args, known) {
   return Object.keys(args ?? {}).filter((key) => !known.includes(key));
 }
-function canvasTools(service) {
+function canvasTools(service, deps = {}) {
   return [
     {
       name: "xyq_canvas",
@@ -4319,7 +4496,15 @@ function canvasTools(service) {
           status: { type: "string", description: "nodes \u7528\uFF1A\u8FD0\u884C\u72B6\u6001 empty / running / success / failed \u2026" },
           query: { type: "string", description: "nodes \u7528\uFF1A\u6309\u6807\u9898/\u63CF\u8FF0/prompt \u6587\u672C\u5339\u914D" },
           limit: { type: "number", description: "nodes \u7528\uFF1A\u5355\u9875\u6761\u6570\uFF081~50\uFF0C\u9ED8\u8BA4 20\uFF09" },
-          offset: { type: "number", description: "nodes \u7528\uFF1A\u5206\u9875\u504F\u79FB\uFF080~1000\uFF09" }
+          offset: { type: "number", description: "nodes \u7528\uFF1A\u5206\u9875\u504F\u79FB\uFF080~1000\uFF09" },
+          name: { type: "string", description: "create-canvas \u7528\uFF1A\u753B\u5E03\u540D\uFF08\u5EFA\u8BAE\u5E26\u65E5\u671F\uFF0C\u4FBF\u4E8E\u4E8B\u540E\u6E05\u7406\uFF09" },
+          model: { type: "string", description: 'node-create \u7528\uFF1A\u56FE\u7247\u6A21\u578B key\uFF08xyq_models({type:"image",channel:"jimeng"})\uFF09' },
+          prompt: { type: "string", description: "node-create \u7528\uFF1A\u5B8C\u6574\u63D0\u793A\u8BCD" },
+          count: { type: "number", description: "node-create \u7528\uFF1A\u751F\u6210\u5F20\u6570\uFF08\u6309\u6A21\u578B\u652F\u6301\u8303\u56F4\uFF09" },
+          mode: { type: "string", enum: ["t2i", "i2i"], description: "node-create \u7528\uFF1A\u6587\u751F\u56FE/\u56FE\u751F\u56FE\uFF08\u9ED8\u8BA4 t2i\uFF09" },
+          nodeIds: { type: "array", items: { type: "string" }, description: "node-quote / node-run \u7528\uFF1A\u8282\u70B9 id \u5217\u8868" },
+          resourceIds: { type: "array", items: { type: "string" }, description: "node-download \u7528\uFF1A\u8D44\u6E90 id \u5217\u8868\uFF08node-run \u56DE\u7684\u90A3\u4E32\uFF09" },
+          confirm: { type: "boolean", description: "\u5199\u64CD\u4F5C\u5F00\u5173\uFF1Acreate-canvas / node-create / node-run \u5FC5\u987B\u663E\u5F0F\u4F20 true \u624D\u4F1A\u6267\u884C\uFF08\u9ED8\u8BA4\u4E0D\u6267\u884C\uFF09" }
         },
         required: ["action"]
       },
@@ -4330,7 +4515,7 @@ function canvasTools(service) {
         if (!ACTIONS.includes(action)) {
           throw new Error(`action \u53EA\u80FD\u662F ${ACTIONS.join(" / ")}\uFF0C\u6536\u5230\u7684\u662F\u300C${String(args.action)}\u300D`);
         }
-        const ignored = ignoredKeys3(args, ["action", "canvasId", "type", "status", "query", "limit", "offset"]);
+        const ignored = ignoredKeys3(args, ["action", "canvasId", "type", "status", "query", "limit", "offset", "name", "model", "prompt", "count", "mode", "nodeIds", "resourceIds", "confirm"]);
         const tail = (text) => ignored.length === 0 ? text : `${text}
 \uFF08\u5FFD\u7565\u672A\u77E5\u53C2\u6570\uFF1A${ignored.join(", ")}\uFF09`;
         if (action === "status") {
@@ -4383,6 +4568,74 @@ function canvasTools(service) {
             ].join("\n")
           );
         }
+        const cap = Math.max(0, Math.round(deps.maxCredits ?? 50));
+        const needConfirm = () => args.confirm === true ? void 0 : `\u8FD9\u662F\u5199\u64CD\u4F5C\uFF08\u4F1A\u5728\u4F60\u8D26\u53F7\u91CC\u7559\u4E1C\u897F/\u53EF\u80FD\u6263\u79EF\u5206\uFF09\uFF0C\u5FC5\u987B\u663E\u5F0F\u4F20 confirm:true \u624D\u4F1A\u6267\u884C\uFF1B\u672C\u6B21\u6CA1\u505A\u4EFB\u4F55\u4E8B\u3002`;
+        if (action === "create-canvas") {
+          const blocked = needConfirm();
+          if (blocked !== void 0) throw new Error(blocked);
+          const name = typeof args.name === "string" ? args.name : "";
+          const result2 = await service.createCanvas(name);
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u5EFA\u753B\u5E03\u5931\u8D25");
+          return tail(`\u5DF2\u5EFA\u753B\u5E03\uFF1A${result2.data.name}\uFF5CprojectId=${result2.data.projectId}\uFF08\u4E00\u6B21\u53EA\u5EFA 1 \u4E2A\uFF1B\u4E0D\u7528\u4E86\u53BB\u7F51\u9875\u91CC\u5220\uFF09`);
+        }
+        if (action === "node-create") {
+          const blocked = needConfirm();
+          if (blocked !== void 0) throw new Error(blocked);
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const model = typeof args.model === "string" ? args.model : "";
+          const prompt = typeof args.prompt === "string" ? args.prompt : "";
+          const result2 = await service.createImageNode({
+            canvasId,
+            model,
+            prompt,
+            ...typeof args.count === "number" ? { count: args.count } : {},
+            ...args.mode === "i2i" ? { mode: "i2i" } : { mode: "t2i" }
+          });
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u5EFA\u8282\u70B9\u5931\u8D25");
+          return tail(`\u5DF2\u5EFA\u56FE\u7247\u8282\u70B9\uFF1AnodeId=${result2.data.nodeId}\uFF08\u8FD8\u6CA1\u8DD1\uFF0C\u4E0D\u6263\u79EF\u5206\uFF09\u3002\u4E0B\u4E00\u6B65\uFF1Axyq_canvas({action:"node-quote", canvasId:"${canvasId}", nodeIds:["${result2.data.nodeId}"]})`);
+        }
+        if (action === "node-quote") {
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter((v) => typeof v === "string" && v !== "") : [];
+          const result2 = await service.quote({ canvasId, nodeIds });
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u62A5\u4EF7\u5931\u8D25");
+          const over = result2.data.credits > cap;
+          const lines2 = [
+            `\u9884\u8BA1\u6D88\u8017\uFF1A${result2.data.credits} \u79EF\u5206\uFF08\u672C\u6B21\u4E0A\u9650 ${cap}\uFF09${over ? " \u2014 \u8D85\u8FC7\u4E0A\u9650\uFF0C\u4E0D\u80FD\u8DD1" : ""}`,
+            over ? "\u8981\u8DD1\uFF1A\u5148\u8C03\u8BBE\u7F6E\u9875\u628A\u300C\u753B\u5E03\u79EF\u5206\u4E0A\u9650\u300D\u8C03\u9AD8\uFF0C\u6216\u6362\u4FBF\u5B9C\u6A21\u578B/\u51CF\u5F20\u6570\u3002" : '\u8981\u8DD1\uFF1Axyq_canvas({action:"node-run", confirm:true, canvasId, nodeIds})'
+          ];
+          return tail(lines2.join("\n"));
+        }
+        if (action === "node-run") {
+          const blocked = needConfirm();
+          if (blocked !== void 0) throw new Error(blocked);
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.filter((v) => typeof v === "string" && v !== "") : [];
+          if (nodeIds.length === 0) throw new Error("node-run \u9700\u8981 nodeIds\uFF08\u5148\u7528 node-create \u5EFA\u8282\u70B9\uFF09");
+          const quote = await service.quote({ canvasId, nodeIds });
+          if (quote.ok !== true || quote.data === void 0) throw new Error(quote.message ?? "\u62A5\u4EF7\u5931\u8D25\uFF0C\u4E0D\u6562\u8DD1");
+          if (quote.data.credits > cap) {
+            throw new Error(`\u9884\u8BA1\u8981 ${quote.data.credits} \u79EF\u5206\uFF0C\u8D85\u8FC7\u8BBE\u7F6E\u4E0A\u9650 ${cap}\uFF0C\u5DF2\u62D2\u7EDD\u6267\u884C\uFF08\u6CA1\u6709\u6263\u8D39\uFF09\u3002\u8C03\u9AD8\u4E0A\u9650\u6216\u6362\u4FBF\u5B9C\u6A21\u578B\u518D\u6765\u3002`);
+          }
+          const confirmed = await service.confirm({ canvasId, nodeIds, ceiling: cap });
+          if (confirmed.ok !== true || confirmed.data === void 0) throw new Error(confirmed.message ?? "\u6279\u51C6\u5931\u8D25");
+          const ran = await service.run({ canvasId, nodeIds, token: confirmed.data.token });
+          if (ran.ok !== true || ran.data === void 0) throw new Error(ran.message ?? "\u8FD0\u884C\u5931\u8D25");
+          return tail(
+            [
+              `\u5DF2\u8DD1\u5B8C\uFF0C\u5B9E\u6263\u79EF\u5206\uFF1A${ran.data.credits ?? "\u672A\u77E5"}\uFF08\u9884\u8BA1 ${quote.data.credits}\uFF0C\u4E0A\u9650 ${cap}\uFF09`,
+              `\u4EA7\u7269 ${ran.data.artifacts.length} \u4E2A\uFF1A`,
+              ...ran.data.artifacts.map((file) => `- ${file}`)
+            ].join("\n")
+          );
+        }
+        if (action === "node-download") {
+          const canvasId = typeof args.canvasId === "string" ? args.canvasId : "";
+          const resourceIds = Array.isArray(args.resourceIds) ? args.resourceIds.filter((value) => typeof value === "string" && value !== "") : [];
+          const result2 = await service.download({ canvasId, resourceIds });
+          if (result2.ok !== true || result2.data === void 0) throw new Error(result2.message ?? "\u4E0B\u8F7D\u5931\u8D25");
+          return tail([`\u5DF2\u4E0B\u8F7D ${result2.data.paths.length} \u4E2A\uFF1A`, ...result2.data.paths.map((file) => `- ${file}`)].join("\n"));
+        }
         const result = await service.login();
         if (result.loggedIn) return tail("\u5373\u68A6\u753B\u5E03\u5DF2\u767B\u5F55\uFF08\u51ED\u636E\u5DF2\u843D\u76D8\uFF09\u3002");
         const lines = [result.message ?? "\u5373\u68A6\u753B\u5E03\u6388\u6743\u6CA1\u5B8C\u6210\u3002"];
@@ -4427,19 +4680,19 @@ function startXyq(ctx, deps) {
   const probe = {};
   const packageRoot2 = (() => {
     try {
-      return path14.resolve(path14.dirname(fileURLToPath2(import.meta.url)), "..", "..");
+      return path15.resolve(path15.dirname(fileURLToPath2(import.meta.url)), "..", "..");
     } catch {
       return process.cwd();
     }
   })();
-  const skillAssetsRoot = path14.join(packageRoot2, "assets", "skills", XYQ_SKILL_NAME);
+  const skillAssetsRoot = path15.join(packageRoot2, "assets", "skills", XYQ_SKILL_NAME);
   const run = deps.run ?? defaultCliRunner;
   const resolveCli = deps.resolveCli ?? (() => resolveCliPath(run, { log: (message, fields) => deps.log(message, fields) }));
   const configFile = resolveXyqConfigFile(deps.dshHome);
   const jimengChannel = deps.jimengChannel ?? createJimengService({
     run,
     log: deps.log,
-    outDir: deps.jimengOutDir ?? path14.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
+    outDir: deps.jimengOutDir ?? path15.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
     ...deps.jimengLocateDeps === void 0 ? {} : { locateDeps: deps.jimengLocateDeps }
   });
   const canvasCli = createCanvasCli({ run });
@@ -4456,7 +4709,7 @@ function startXyq(ctx, deps) {
   let unregister;
   let started = false;
   let stopped = false;
-  const outDir = path14.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
+  const outDir = path15.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const routeDeps = { service, outDir, log: deps.log };
   const tryStart = () => {
     if (started || stopped) return;
@@ -4472,7 +4725,7 @@ function startXyq(ctx, deps) {
         [XYQ_RESULT_ROUTE, xyqResultHandler(routeDeps)],
         [XYQ_FILE_ROUTE, xyqFileHandler(routeDeps)]
       ];
-      for (const [path15, handler] of registers) disposers.push(web.register({ kind: "exact", path: path15, handler }));
+      for (const [path16, handler] of registers) disposers.push(web.register({ kind: "exact", path: path16, handler }));
       unregister = () => {
         for (const dispose of disposers.splice(0)) dispose();
       };
@@ -4542,7 +4795,7 @@ function startXyq(ctx, deps) {
     try {
       const tools = ctx.get?.("tools", true);
       if (tools && typeof tools.register === "function") {
-        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) }), ...canvasTools(canvasService)]) tools.register(tool);
+        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot) }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool);
         probe.tools = "registered";
       } else {
         probe.tools = "no-tools";

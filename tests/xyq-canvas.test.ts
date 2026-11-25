@@ -182,3 +182,70 @@ test('错误信封写在 stderr 也要解析；「No project ID」翻成「还�
   assert.equal(result.ok, false)
   assert.match(String(result.message), /还没选中画布/, '真机那条 No project ID 要翻成人话')
 })
+
+// ── 0.7.0：画布写操作（confirm → quote → 一次判死 → 批准 → 跑）───────────
+
+function toolOf(h: ReturnType<typeof makeHarness>, maxCredits = 50) {
+  return canvasTools(h.service, { maxCredits })[0] as {
+    execute: (args: Record<string, unknown>) => Promise<string>
+  }
+}
+
+test('写操作：没有 confirm:true 一律不动手（create-canvas / node-create / node-run）', async () => {
+  const h = makeHarness({})
+  const tool = toolOf(h)
+  await assert.rejects(() => tool.execute({ action: 'create-canvas', name: '甲鱼' }), /confirm:true/)
+  await assert.rejects(() => tool.execute({ action: 'node-create', canvasId: 'p', model: 'm', prompt: 'x' }), /confirm:true/)
+  await assert.rejects(() => tool.execute({ action: 'node-run', canvasId: 'p', nodeIds: ['n'] }), /confirm:true/)
+  assert.equal(h.calls.length, 0, '被 confirm 拦住时一条 CLI 都不许跑')
+})
+
+test('create-canvas：confirm 后建一个，返回 projectId；一次只建一个', async () => {
+  const h = makeHarness({ 'canvas create': { stdout: JSON.stringify({ ok: true, data: { projectId: 'p-9', name: '甲鱼做梦' } }) } })
+  const text = await toolOf(h).execute({ action: 'create-canvas', name: '甲鱼做梦', confirm: true })
+  assert.match(text, /已建画布/)
+  assert.match(text, /p-9/)
+  assert.equal(h.calls.filter((args) => args[1] === 'canvas' && args[2] === 'create').length, 1, '只建一个')
+})
+
+test('node-create：建节点不跑（不带 --run），返回 nodeId', async () => {
+  const h = makeHarness({ 'node create': { stdout: JSON.stringify({ ok: true, data: { nodeId: 'n-7' } }) } })
+  const text = await toolOf(h).execute({ action: 'node-create', canvasId: 'p-9', model: 'seedream_5.5', prompt: '鲸鱼头像', confirm: true })
+  assert.match(text, /n-7/)
+  const call = h.calls.find((args) => args[1] === 'node' && args[2] === 'create')!
+  assert.ok(call.includes('--mode') && call.includes('t2i'))
+  assert.equal(call.includes('--run'), false, '建节点阶段绝不带 --run（那会扣积分）')
+})
+
+test('node-quote：报价超过上限时如实说不能跑', async () => {
+  const h = makeHarness({ 'node quote': { stdout: JSON.stringify({ ok: true, data: { credits: 88 } }) } })
+  const text = await toolOf(h, 50).execute({ action: 'node-quote', canvasId: 'p-9', nodeIds: ['n-7'] })
+  assert.match(text, /预计消耗：88 积分/)
+  assert.match(text, /超过上限/)
+})
+
+test('node-run：报价超上限 ⇒ 一次判死，批准与运行一条都不调', async () => {
+  const h = makeHarness({ 'node quote': { stdout: JSON.stringify({ ok: true, data: { credits: 120 } }) } })
+  await assert.rejects(
+    () => toolOf(h, 50).execute({ action: 'node-run', canvasId: 'p-9', nodeIds: ['n-7'], confirm: true }),
+    /超过设置上限 50/,
+  )
+  assert.equal(h.calls.some((args) => args[2] === 'confirm' || args[2] === 'run'), false, '拒绝后不许再调 confirm/run')
+})
+
+test('node-run：上限内 ⇒ quote → confirm → run，回产物绝对路径 + 实扣积分', async () => {
+  const h = makeHarness({
+    'node quote': { stdout: JSON.stringify({ ok: true, data: { credits: 12 } }) },
+    'node confirm': { stdout: JSON.stringify({ ok: true, data: { creditConfirmationToken: 'tok-1' } }) },
+    'node run': { stdout: JSON.stringify({ ok: true, data: { items: [{ nodeId: 'n-7', resources: [{ resourceId: 'r-1', creditsAmount: 12 }] }] } }) },
+    'resource download': { stdout: JSON.stringify({ ok: true, data: { path: 'D:/canvas/n-7.png' } }) },
+  })
+  const text = await toolOf(h, 50).execute({ action: 'node-run', canvasId: 'p-9', nodeIds: ['n-7'], confirm: true })
+  assert.match(text, /实扣积分：12/)
+  assert.match(text, /D:\/canvas\/n-7\.png/)
+  const confirmCall = h.calls.find((args) => args[2] === 'confirm')!
+  assert.ok(confirmCall.includes('--credit-ceiling') && confirmCall.includes('50'))
+  const runCall = h.calls.find((args) => args[2] === 'run')!
+  assert.ok(runCall.includes('--credit-token') && runCall.includes('tok-1'))
+  assert.ok(runCall.includes('--wait'))
+})

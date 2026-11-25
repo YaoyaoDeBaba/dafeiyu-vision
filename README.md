@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 103 条判据
+npm test            # 构建 + 109 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -516,3 +516,49 @@ xyq_canvas({ action: 'status' | 'canvases' | 'current' | 'nodes' | 'login', canv
 真机实测（2026-11-25）：`status` → 已登录、到期 2026-11-26T03:55、CLI 1.4.2；
 `canvases` → 0 个；`current` → null；`nodes` 未传 canvasId → 回「还没选中画布…」。
 写操作（create / run / director）**不在这一版**，等只读链路用稳再开。
+
+## 十二、画布**写操作**：quote → 确认 → run（0.7.0）
+
+`xyq_canvas` 的 action 从 5 个扩到 10 个：
+
+| action | 说明 | 扣积分 |
+|---|---|---|
+| `status` / `canvases` / `current` / `nodes` / `login` | 只读（0.6.0） | 否 |
+| `create-canvas` | 建画布（**需 `confirm:true`**，一次只建 1 个） | 否 |
+| `node-create` | 建图片节点（需 `confirm:true`；**不带 --run**，所以不扣） | 否 |
+| `node-quote` | 报价：`预计消耗 N 积分（本次上限 M）` | 否 |
+| `node-run` | **要 `confirm:true`**：内部 quote → 超上限**一次判死** → confirm(credit-ceiling=M) → run --wait → 下载产物 | **是** |
+| `node-download` | 单独下载已生成的资源（`resourceIds`） | 否 |
+
+积分闸（用户 2026-11-25 定的口径）：
+- **报价超过设置里的上限 ⇒ 直接拒绝**，不再问第二次（工具层只做一次判断，没有模糊地带）；
+- 上限在设置页「画布积分上限」里配（`xyq.json` 的 `canvasMaxCredits`，默认 50）；
+- 建画布/建节点/跑节点**都要显式 `confirm:true`**——默认一次 CLI 都不跑；
+- 写操作返回**产物的绝对路径 + 本次实扣积分**。
+
+### 12.1 即梦两条 CLI 的输出去向（备忘，别再踩）
+
+> **短剧 `jimeng-novel`**：信封走 **stdout**，flag 是 `-j`。
+> **画布 `dreamina-canvas`**：flag 是 **`--format json`**（`-j` 会报 unrecognized option）；
+> **错误信封可能写在 stderr**（例：`No project ID was provided`），解析必须 **stdout → stderr 都看**，
+> 否则会退化成"没有返回可解析的 JSON"。
+> **两条 CLI 的 flag 不通用**，别照抄。
+
+### 12.2 真机实测链路（2026-11-25，花了 4 积分）
+
+```
+canvas create "鲸鱼做梦自检-20261125"      → data.project.projectId
+node create image --title … --model seedream_5.5 --prompt … → data.node.nodeId
+node quote --node-id …                     → {"items":[{"maxCredits":4}],"totalMaxCredits":4,"confirmable":true}
+node confirm --credit-ceiling 50           → creditConfirmationToken
+node run --credit-token … --wait           → items[].resources[{resourceId, creditsAmount:4, status:success}]
+resource download <resourceId> -o <dir>    → {"data":{"path":"…png","size":2162625}}
+```
+产物 1536×1536 PNG、**带「AI 生成」水印**——拿去做头像/图标要裁缩（群头像 128²、≤12KB data URL）。
+
+### 12.3 字段名踩坑（写适配器时别再赌一个键）
+
+- `canvas create` → `data.project.projectId`（不是 `data.projectId`）；
+- `node create` → `data.node.nodeId`（不是 `data.nodeId`），**且 `--title` 必填**；
+- `node quote` → `totalMaxCredits` / `items[].maxCredits`；
+- `node run` / `node show` → `items[].resources[].resourceId` + `resources[].creditsAmount`（**没有 URL**，要内容必须 `resource download`）。

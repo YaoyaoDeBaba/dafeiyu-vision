@@ -24,6 +24,8 @@ export interface XyqView {
   freedom: 'explicit' | 'budgeted' | 'open'
   /** 默认生成通道：调用方没传 channel 时用它（默认 xyq）。 */
   defaultChannel?: 'xyq' | 'jimeng'
+  /** 画布写操作的积分上限（报价超过就拒绝）。 */
+  canvasMaxCredits?: number
 }
 
 const BASE = '/api/dsh-remote-dafeiyu/xyq'
@@ -209,6 +211,11 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
                   h('option', { value: 'jimeng', children: '即梦（jimeng）' }),
                 ],
               }),
+            ] }),
+            h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' }, children: [
+              h('span', { style: labelStyle, children: '画布积分上限' }),
+              h('input', { type: 'number', min: 0, max: 5000, value: String(cfg.canvasMaxCredits ?? 50), style: { ...fieldStyle, width: '120px' }, onChange: (event: { target?: { value?: string } }) => setCfg({ ...cfg, canvasMaxCredits: number(String(event?.target?.value ?? ''), 50) }), onBlur: () => void save({ canvasMaxCredits: cfg.canvasMaxCredits ?? 50 }) }),
+              h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' }, children: '报价超过它，画布写操作直接拒绝' }),
             ] }),
             h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' }, children: [
               h('span', { style: labelStyle, children: '调用自由度' }),

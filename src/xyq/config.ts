@@ -33,6 +33,8 @@ export interface XyqConfig {
    * 设置页那颗开关改的就是它——手机端/面板走同一条路由，也就能选即梦了。
    */
   defaultChannel: ChannelId
+  /** 画布写操作的积分上限：报价超过它就**直接拒绝**（0.7.0 起，工具层只判一次）。 */
+  canvasMaxCredits: number
 }
 
 const DEFAULTS: XyqConfig = {
@@ -45,6 +47,7 @@ const DEFAULTS: XyqConfig = {
   budget: { images: 10, videos: 2, maxVideoSeconds: 10 },
   freedom: 'explicit',
   defaultChannel: 'xyq',
+  canvasMaxCredits: 50,
 }
 
 export function resolveXyqConfigFile(dshHome = resolveDshHome(process.env)): string {
@@ -75,6 +78,7 @@ export function normalizeXyqConfig(raw: unknown): XyqConfig {
     },
     freedom,
     defaultChannel: value.defaultChannel === 'jimeng' ? 'jimeng' : 'xyq',
+    canvasMaxCredits: clampInt(value.canvasMaxCredits, 0, 5000, DEFAULTS.canvasMaxCredits),
   }
 }
 
@@ -112,6 +116,7 @@ export function viewXyqConfig(config: XyqConfig): Record<string, unknown> {
     budget: config.budget,
     freedom: config.freedom,
     defaultChannel: config.defaultChannel,
+    canvasMaxCredits: config.canvasMaxCredits,
   }
 }
 
