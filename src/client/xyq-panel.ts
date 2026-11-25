@@ -1,5 +1,5 @@
 /**
- * xyq-panel — 设置页「小云雀」分栏（React 组件）。
+ * xyq-panel — 设置页「鲸鱼做梦」分栏（React 组件）。
  *
  * 配置：Access Key、默认模型/时长、预算上限、调用自由度；状态：登录是否有效、剩余积分。
  * 密钥只在输入框里出现一次，保存后设置页只显示“…后四位”。
@@ -134,7 +134,7 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
     }, [])
 
     if (cfg === null) {
-      return h('div', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-tertiary)' }, children: status || '正在读取小云雀配置…' })
+      return h('div', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-tertiary)' }, children: status || '正在读取鲸鱼做梦配置…' })
     }
 
     const number = (value: string, fallback: number): number => {
@@ -148,7 +148,7 @@ export function buildXyqPanel(deps: { createElement: CreateElement; hooks: Hooks
         h('p', {
           style: { margin: 0, fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: '1.6' },
           children:
-            '通过小云雀官方 CLI 提供 generate_image / generate_video / xyq_balance / xyq_models 四个工具。' +
+            '「鲸鱼做梦」底下两条生成通道：小云雀（channel=xyq）与即梦（channel=jimeng），共 5 个工具：generate_image / generate_video / xyq_balance / xyq_models / xyq_guide。' +
             'Access Key 在 小云雀官网 → ⚡CLI/API → API → 管理 Access Key 新建；它有时效，过期后工具会报错并在下面提示。',
         }),
         h('div', {

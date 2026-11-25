@@ -1,5 +1,5 @@
 /**
- * xyq-quick —— 形象菜单里的「小云雀」面板（0.25）。
+ * xyq-quick —— 形象菜单里的「鲸鱼做梦」面板（0.25）。
  *
  * 一块面板完成：写 prompt → 选模型（生图/生视频自动切参数）→ 调比例/分辨率/时长/数量
  * → 看预计积分 → 生成 → 轮询结果 → 预览产物。右上角齿轮打开二级窗口填 Access Key。
@@ -108,7 +108,7 @@ export function mountXyqQuick(): XyqQuickHandle {
   head.className = 'head'
   const title = doc.createElement('span')
   title.className = 'grow'
-  title.textContent = '小云雀'
+  title.textContent = '鲸鱼做梦'
   const gear = doc.createElement('button')
   gear.type = 'button'
   gear.textContent = '⚙'

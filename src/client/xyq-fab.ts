@@ -1,5 +1,5 @@
 /**
- * xyq-fab —— 「小云雀」快捷面板的**入口按钮**。
+ * xyq-fab —— 「鲸鱼做梦」快捷面板的**入口按钮**。
  *
  * ## 为什么需要新增这一颗（拆包时唯一的界面新增）
  *
@@ -43,7 +43,7 @@ export function mountXyqFab(handle: XyqPanelHandle): () => void {
   const fab = doc.createElement('button')
   fab.id = 'dafeiyu-xyq-fab'
   fab.type = 'button'
-  fab.title = '小云雀：生成图片 / 视频'
+  fab.title = '鲸鱼做梦：生成图片 / 视频'
   fab.textContent = '🎬'
   doc.body.appendChild(fab)
 

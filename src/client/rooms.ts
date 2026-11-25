@@ -1,5 +1,5 @@
 /**
- * client/rooms —— 向大肥鱼宿主「房间管理器」领**两间**房：设置页的「肥鱼识图」与「小云雀」。
+ * client/rooms —— 向大肥鱼宿主「房间管理器」领**两间**房：设置页的「肥鱼识图」与「鲸鱼做梦」。
  *
  * ## 背景（2026-11-16 · 大肥鱼 .84 的房间注册制）
  *
@@ -58,11 +58,11 @@ export interface RoomHost {
  * 本包要的两间房——**id / label / order 就是契约本身**，别处不许再写一遍。
  *
  * `order` 40 / 50 沿用本体分栏定稿的顺序：本体自己的四栏是 10/20/30/无，
- * 「肥鱼识图」排在「Agent 团队」之后、「小云雀」之前。
+ * 「肥鱼识图」排在「Agent 团队」之后、「鲸鱼做梦」之前。
  */
 export const ROOM_DEFINITIONS: ReadonlyArray<{ id: string; label: string; order: number }> = [
   { id: 'vision', label: '肥鱼识图', order: 40 },
-  { id: 'xyq', label: '小云雀', order: 50 },
+  { id: 'xyq', label: '鲸鱼做梦', order: 50 },
 ]
 
 /** 每间房怎么装修：给容器、还清理函数（由 `main.ts` 用 React 实现）。 */

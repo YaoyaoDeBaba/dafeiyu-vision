@@ -7,9 +7,9 @@
 export function xyqGuidance(freedom: string): string {
   const lines = [
     '## 生成通道（图片 / 视频）',
-    '本机接入了两条生成通道，用工具参数 `channel` 选：`channel=xyq`（默认，小云雀）/ `channel=jimeng`（即梦）。',
+    '「鲸鱼做梦」是本机的图片/视频生成能力，底下两条通道，用工具参数 `channel` 选：`channel=xyq`（默认，小云雀）/ `channel=jimeng`（即梦）。',
     '工具：`generate_image`、`generate_video`、`xyq_balance`（两条通道各一段额度）、`xyq_models`（先定通道再查模型）。',
-    '- 小云雀（xyq）：营销成片、短剧 agent 全流程、Canvas 画布工程化。Access Key 在「大肥鱼 → 小云雀」里填，积分计费。',
+    '- 小云雀（xyq）：营销成片、短剧 agent 全流程、Canvas 画布工程化。Access Key 在「大肥鱼 → 鲸鱼做梦」里填，积分计费。',
     '- 即梦（jimeng）：即梦画布与短剧创作（画布 CLI `dreamina-canvas` + 短剧 CLI `jimeng-novel`），画布/分镜/导演台类需求。积分计费，登录走**浏览器授权**（不需要 Key）。',
     '选择口径：用户点名「即梦 / Dreamina」→ jimeng；点名「小云雀 / xyq」→ xyq；没点名 → 默认 xyq，只有明确提出即梦画布、即梦短剧、Dreamina 时才切 jimeng。',
     '使用顺序：`xyq_models` 查模型（两条通道模型名不通用）→ `xyq_balance` 看额度 → 生成 → 把工具返回的**本地文件绝对路径**告诉用户。',

@@ -1,11 +1,11 @@
 ---
 name: dafeiyu-xyq
-description: 大肥鱼的「生成通道」选择手册：generate_image / generate_video / xyq_balance / xyq_models 底下的两条通道（channel=xyq 小云雀、channel=jimeng 即梦），什么时候选即梦（画布/短剧）、什么时候选云雀（营销成片/短剧 agent 全流程）、两条通道的计费与登录差异、不可用时怎么读错误。用户要把图/视频交给小云雀或即梦生成、或问「用哪个通道/为什么即梦没反应」时读这篇。
+description: 大肥鱼「鲸鱼做梦」（生成能力总入口）的通道选择手册：generate_image / generate_video / xyq_balance / xyq_models 底下的两条通道（channel=xyq 小云雀、channel=jimeng 即梦），什么时候选即梦（画布/短剧）、什么时候选云雀（营销成片/短剧 agent 全流程）、两条通道的计费与登录差异、不可用时怎么读错误。用户要把图/视频交给小云雀或即梦生成、或问「用哪个通道/为什么即梦没反应」时读这篇。
 ---
 
-# 生成通道：小云雀 vs 即梦
+# 鲸鱼做梦：小云雀通道 vs 即梦通道
 
-同一批工具的 `channel` 参数决定活交给谁。**默认 `xyq`**——不传就是老行为。
+「鲸鱼做梦」是设置页里那一栏的名字，底下两条通道：小云雀（`channel=xyq`，默认）与即梦（`channel=jimeng`）。同一批工具的 `channel` 参数决定活交给谁；**不传就是 `xyq`**，老调用行为不变。
 
 | | 小云雀（`channel=xyq`，默认） | 即梦（`channel=jimeng`） |
 |---|---|---|

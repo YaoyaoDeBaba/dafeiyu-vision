@@ -9,9 +9,9 @@
  *
  * | # | 东西 | 拆包前在哪 | 现在 |
  * |---|---|---|---|
- * | ① | 设置页两间房（「肥鱼识图」40 /「小云雀」50） | 本体 `dafeiyu-page.ts` 的两个写死 tab | `rooms.ts` → 本包注册 |
+ * | ① | 设置页两间房（「肥鱼识图」40 /「鲸鱼做梦」50） | 本体 `dafeiyu-page.ts` 的两个写死 tab | `rooms.ts` → 本包注册 |
  * | ② | 聊天页右下角的鲸鱼按钮（FAB） | 本体 `main.ts` 的 `mountVisionFab` | 本文件挂 |
- * | ③ | 小云雀快捷面板 + 它的入口按钮 | 本体 `main.ts` 的 `mountXyqQuick`（由形象菜单打开） | 本文件挂 |
+ * | ③ | 鲸鱼做梦快捷面板 + 它的入口按钮 | 本体 `main.ts` 的 `mountXyqQuick`（由形象菜单打开） | 本文件挂 |
  *
  * ## 为什么不用 `inject`
  *
@@ -39,7 +39,7 @@ export const name = 'dsh-vision-dafeiyu'
 
 /** 宿主没给 React 时画的那一行——**与本体 `dafeiyu-page.ts:300-308` 逐字一致**。 */
 const FALLBACK_VISION = '肥鱼识图面板起不来（宿主没给 react hooks）。'
-const FALLBACK_XYQ = '小云雀面板起不来（宿主没给 react hooks）。'
+const FALLBACK_XYQ = '鲸鱼做梦面板起不来（宿主没给 react hooks）。'
 
 function swallow(message: string, error: unknown): void {
   try {
@@ -250,14 +250,14 @@ export function apply(): (() => void) | void {
     /* 观察器起不来只影响"自动收起"，按钮照常在 */
   }
 
-  // ③ 小云雀快捷面板 + 入口按钮。面板默认隐藏，只有点了 🎬 才出现。
+  // ③ 鲸鱼做梦快捷面板 + 入口按钮。面板默认隐藏，只有点了 🎬 才出现。
   let xyqQuick: ReturnType<typeof mountXyqQuick> | undefined
   let xyqFabCleanup: (() => void) | undefined
   try {
     xyqQuick = mountXyqQuick()
     xyqFabCleanup = mountXyqFab(xyqQuick)
   } catch (error) {
-    swallow('小云雀快捷面板挂载抛错（已吞掉）', error)
+    swallow('鲸鱼做梦快捷面板挂载抛错（已吞掉）', error)
   }
 
   return () => {

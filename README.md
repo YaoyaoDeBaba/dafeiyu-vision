@@ -1,11 +1,11 @@
-# dsh-vision-dafeiyu — 大肥鱼识图 + 小云雀（独立插件）
+# dsh-vision-dafeiyu — 大肥鱼识图 + 鲸鱼做梦（独立插件）
 
 从 `dsh-remote-dafeiyu`（大肥鱼本体）里拆出来的两件事：
 
 | 能力 | 宿主侧 | 设置页 | 工具 |
 |---|---|---|---|
 | **肥鱼识图**（外挂视觉模型） | `/api/dsh-remote-dafeiyu/vision/{config,recognize,models}` | 「肥鱼识图」tab（order 40） | `recognize_image` + `dafeiyu:vision` 提示词段 |
-| **小云雀**（CLI 生图/生视频） | `/api/dsh-remote-dafeiyu/xyq/*`（八条） | 「小云雀」tab（order 50） | `generate_image` / `generate_video` / `xyq_balance` / `xyq_models` + `dafeiyu:xyq` 提示段 |
+| **鲸鱼做梦**（CLI 生图/生视频：小云雀 `xyq` / 即梦 `jimeng` 两条通道） | `/api/dsh-remote-dafeiyu/xyq/*`（八条） | 「鲸鱼做梦」tab（order 50） | `generate_image` / `generate_video` / `xyq_balance` / `xyq_models` + `dafeiyu:xyq` 提示段 |
 
 **路由前缀与存储目录与大肥鱼本体完全一致（零迁移）**：手机协议、本体其它代码、
 用户已经配好的 key 都指着这些路径，拆包不是改名的机会。
@@ -121,7 +121,7 @@ npm run check       # 产物是否与源码同步（CI 用）
 1. `waitForRooms(1500)`：拿不到（宿主版本旧 / 没有 window）就**静默返回 undefined**，
    不 `console.error`（降级不是故障）；
 2. `register({ id:'vision', label:'肥鱼识图', order:40, mount })` 与
-   `register({ id:'xyq', label:'小云雀', order:50, mount })`，**两间互不牵连**：
+   `register({ id:'xyq', label:'鲸鱼做梦', order:50, mount })`，**两间互不牵连**：
    一间 `register` 抛了，另一间照旧；
 3. `mount(container)` 里用 `createRoot` 渲染搬过来的那一栏，**返回的清理函数**
    做 `root.unmount()` + 清空容器子节点（切走 tab / 卸载插件都走它，且幂等）；
@@ -146,7 +146,7 @@ npm run check       # 产物是否与源码同步（CI 用）
    那套菜单在 `dsh-avatar-dafeiyu` 里、且它的回调只在包内（没有跨包出口）。
    本包因此在鲸鱼按钮上面加了一颗 🎬 悬浮按钮（`xyq-fab.ts`）来 `open()` 面板，
    面板本身一个字都没改。
-6. **本体里那份「肥鱼识图」「小云雀」两栏与本包是两套**：本包只负责"能独立装上、
+6. **本体里那份「肥鱼识图」「鲸鱼做梦」两栏与本包是两套**：本包只负责"能独立装上、
    自己注册两间房"；本体把这两个分栏撤掉、改成本包注册，是下一步的事（本仓库不动本体仓）。
 
 ## 六、判据（`npm test`）
@@ -428,7 +428,7 @@ web_image_gen({ prompt: '一只戴红帽的蓝色小鲸鱼，扁平插画风，�
 切技能→打字→发送→认出图→下载落盘（字节一致）/ 窄窗口走菜单 / 找不到入口报错 /
 一张没出报错（带页面尾部）/ 出图但下载全失败报错 / 空提示词拒 / 落盘目录固定。
 
-## 十、双通道：小云雀 / 即梦（0.3.0）
+## 十、双通道：小云雀 / 即梦（0.3.0；产品名「鲸鱼做梦」）
 
 `generate_image` / `generate_video` / `xyq_models` 都多了 `channel` 参数：
 
