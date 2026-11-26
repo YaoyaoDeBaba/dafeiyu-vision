@@ -243,7 +243,12 @@ export function mountXyqQuick(): XyqQuickHandle {
         modelSelect.appendChild(element)
       }
       if (options.length > 0) await onModelChange()
-      else setStatus(`${channelLabel()} 没有可用模型（模型名两条通道不通用；先确认该通道已登录/填 Key）`)
+      else
+        setStatus(
+          currentChannel() === 'jimeng'
+            ? '即梦没有可用模型：先让 agent 跑 xyq_canvas({action:"status"}) 或 xyq_balance({channel:"jimeng"}) 确认登录态（未登录要先授权），再重试；模型名两条通道不通用。'
+            : '小云雀没有可用模型：先确认设置页已填 Access Key（xyq_balance 可复检），模型名两条通道不通用。',
+        )
     } catch (error) {
       setStatus(`读取模型失败：${String((error as Error)?.message ?? error)}`)
     }

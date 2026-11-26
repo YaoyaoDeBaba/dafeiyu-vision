@@ -637,7 +637,7 @@ xyq_estimate({ type: 'image'|'video', model: '<key>', duration?, channel?, canva
 - 面板顶部多一个 **通道下拉**（`通道：小云雀` / `通道：即梦`），首次打开时跟设置页的「默认通道」对齐；
 - 模型列表按**当前通道**拉（`/xyq/models?type=…&channel=…`），余额同样带通道（`/xyq/balance?channel=…`），显示成「剩余积分（即梦）：652」；
 - **切通道会先清空**模型列表与参数，再按新通道重拉（两条通道的模型名不通用，留着旧模型会直接 400）；
-- 生成请求带上 `channel`，与面板上选的一致；空列表会提示「X 没有可用模型（模型名两条通道不通用；先确认该通道已登录/填 Key）」。
+- 生成请求带上 `channel`，与面板上选的一致；空列表按通道给不同提示：即梦 → 「先跑 `xyq_canvas({action:"status"})` 或 `xyq_balance({channel:"jimeng"})` 确认登录态」，小云雀 → 「先确认设置页已填 Access Key」。
 
 ### 16.1 顺带一条实测（2026-11-26）
 
