@@ -10,7 +10,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { XYQ_CANVAS_ROUTE, xyqCanvasHandler } from '../src/xyq/routes.js'
+import { XYQ_CANVAS_ROUTE, xyqCanvasHandler, xyqQueryHandler } from '../src/xyq/routes.js'
 import type { CanvasService } from '../src/xyq/canvas/service.js'
 
 function fakeResponse() {
@@ -109,4 +109,34 @@ test('画布路由：what 写错 ⇒ 400 + 中文；非 GET ⇒ 405（只读不�
   const post = fakeResponse()
   await handler(fakeRequest(XYQ_CANVAS_ROUTE, 'POST'), post as never)
   assert.equal(post.captured.status, 405)
+})
+
+// ── 0.11.0：快速面板按通道拉模型/余额（路由层）─────────────────────
+
+test('xyq/models|balance 带 ?channel=jimeng ⇒ 服务层收到 jimeng（面板切通道靠它）', async () => {
+  const seen: Array<Record<string, unknown>> = []
+  const service = {
+    config: () => ({ defaultChannel: 'xyq' }),
+    models: async (type: string, channel: string) => {
+      seen.push({ kind: 'models', type, channel })
+      return { ok: true, models: [{ key: 'seedream_5.5', name: 'Seedream 5.5' }] }
+    },
+    balance: async (channel: string) => {
+      seen.push({ kind: 'balance', channel })
+      return { ok: true, totalRemain: '652' }
+    },
+  }
+  const handler = xyqQueryHandler('models', { service: service as never, outDir: 'C:/tmp', log: () => {} })
+  const res = fakeResponse()
+  await handler(fakeRequest('/api/dsh-remote-dafeiyu/xyq/models?type=image&channel=jimeng'), res as never)
+  assert.equal(res.captured.status, 200)
+  const body = res.captured.body as { channel?: string; models?: Array<{ key: string }> }
+  assert.equal(body.channel, 'jimeng')
+  assert.equal(body.models?.[0]?.key, 'seedream_5.5')
+  assert.deepEqual(seen[0], { kind: 'models', type: 'image', channel: 'jimeng' })
+
+  const balHandler = xyqQueryHandler('balance', { service: service as never, outDir: 'C:/tmp', log: () => {} })
+  const res2 = fakeResponse()
+  await balHandler(fakeRequest('/api/dsh-remote-dafeiyu/xyq/balance?channel=jimeng'), res2 as never)
+  assert.equal((res2.captured.body as { channel?: string }).channel, 'jimeng')
 })

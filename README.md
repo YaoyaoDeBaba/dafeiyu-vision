@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 122 条判据
+npm test            # 构建 + 123 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -629,3 +629,17 @@ xyq_estimate({ type: 'image'|'video', model: '<key>', duration?, channel?, canva
 `Seedance_2.0_mini` / `wan3.0` / `happyhorse-1.1`
 
 **`seedance_2.0`（下划线+2.0）是无效 key**，会返回 `unknown or disabled model "seedance_2.0"; use model list`。
+
+## 十六、快速面板（形象菜单里的「鲸鱼做梦」）跟通道走（0.11.0）
+
+之前那个悬浮面板的模型下拉**只会拉小云雀的模型**，切了默认通道也不变。现在：
+
+- 面板顶部多一个 **通道下拉**（`通道：小云雀` / `通道：即梦`），首次打开时跟设置页的「默认通道」对齐；
+- 模型列表按**当前通道**拉（`/xyq/models?type=…&channel=…`），余额同样带通道（`/xyq/balance?channel=…`），显示成「剩余积分（即梦）：652」；
+- **切通道会先清空**模型列表与参数，再按新通道重拉（两条通道的模型名不通用，留着旧模型会直接 400）；
+- 生成请求带上 `channel`，与面板上选的一致；空列表会提示「X 没有可用模型（模型名两条通道不通用；先确认该通道已登录/填 Key）」。
+
+### 16.1 顺带一条实测（2026-11-26）
+
+画布跑节点时若 `node quote` 回 **`totalMaxCredits: 0`**（如 `seedream_5.0_lite` 那次），运行后 `credit get` 不变（652 → 652）——
+**报价 0 就真不扣费**，积分闸（报价 > 上限才拒绝）对它自然放行。

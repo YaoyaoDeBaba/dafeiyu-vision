@@ -120,6 +120,14 @@ export function mountXyqQuick(): XyqQuickHandle {
 
   const prompt = doc.createElement('textarea')
   prompt.placeholder = '描述你要生成的内容（用户原话，不要扩写）'
+  const channelSelect = doc.createElement('select')
+  channelSelect.title = '生成通道（跟设置页「默认通道」同步）'
+  for (const [value, label] of [['xyq', '小云雀'], ['jimeng', '即梦']] as const) {
+    const option = doc.createElement('option')
+    option.value = value
+    option.textContent = `通道：${label}`
+    channelSelect.appendChild(option)
+  }
   const modelSelect = doc.createElement('select')
   const params = doc.createElement('div')
   params.className = 'params'
@@ -141,7 +149,7 @@ export function mountXyqQuick(): XyqQuickHandle {
   status.className = 'status'
   const result = doc.createElement('div')
   result.className = 'result'
-  panel.append(head, prompt, modelSelect, params, estimate, balance, actions, status, result)
+  panel.append(head, prompt, channelSelect, modelSelect, params, estimate, balance, actions, status, result)
   doc.body.appendChild(panel)
   makeDraggable(panel, head, 'xyq')
 
@@ -190,10 +198,16 @@ export function mountXyqQuick(): XyqQuickHandle {
     return options.find((entry) => `${entry.type}::${entry.key}` === value)
   }
 
+  const currentChannel = (): 'xyq' | 'jimeng' => (channelSelect.value === 'jimeng' ? 'jimeng' : 'xyq')
+  const channelLabel = (): string => (currentChannel() === 'jimeng' ? '即梦' : '小云雀')
+
   const refreshBalance = async (): Promise<void> => {
     try {
-      const answer = await getJson(`${BASE}/balance`)
-      balance.textContent = answer.ok === true ? `剩余积分：${String(answer.totalRemain ?? '未知')}` : String(answer.message ?? '余额读取失败')
+      const answer = await getJson(`${BASE}/balance?channel=${currentChannel()}`)
+      balance.textContent =
+        answer.ok === true
+          ? `剩余积分（${channelLabel()}）：${String(answer.totalRemain ?? '未知')}`
+          : String(answer.message ?? '余额读取失败')
     } catch (error) {
       balance.textContent = `余额读取失败：${String((error as Error)?.message ?? error)}`
     }
@@ -202,7 +216,16 @@ export function mountXyqQuick(): XyqQuickHandle {
   const loadModels = async (): Promise<void> => {
     setStatus('正在读取模型…')
     try {
-      const [images, videos] = await Promise.all([getJson(`${BASE}/models?type=image`), getJson(`${BASE}/models?type=video`)])
+      // 按**当前通道**拉模型（两条通道的模型名不通用，0.11.0）
+      const channel = currentChannel()
+      const [images, videos] = await Promise.all([
+        getJson(`${BASE}/models?type=image&channel=${channel}`),
+        getJson(`${BASE}/models?type=video&channel=${channel}`),
+      ])
+      if (images.ok === false || videos.ok === false) {
+        const why = String(images.message ?? images.error ?? videos.message ?? videos.error ?? '')
+        setStatus(`${channelLabel()} 模型读取失败：${why}`)
+      }
       const list: ModelOption[] = []
       for (const row of Array.isArray(images.models) ? (images.models as Array<Record<string, unknown>>) : []) {
         if (typeof row.name === 'string') list.push({ type: 'image', key: row.name, name: row.name })
@@ -220,7 +243,7 @@ export function mountXyqQuick(): XyqQuickHandle {
         modelSelect.appendChild(element)
       }
       if (options.length > 0) await onModelChange()
-      else setStatus('没有可用模型')
+      else setStatus(`${channelLabel()} 没有可用模型（模型名两条通道不通用；先确认该通道已登录/填 Key）`)
     } catch (error) {
       setStatus(`读取模型失败：${String((error as Error)?.message ?? error)}`)
     }
@@ -334,7 +357,7 @@ export function mountXyqQuick(): XyqQuickHandle {
     result.textContent = ''
     setStatus('提交中…')
     try {
-      const payload: Record<string, unknown> = { type: option.type, prompt: text, model: option.key, sessionKey: 'xyq-panel' }
+      const payload: Record<string, unknown> = { type: option.type, prompt: text, model: option.key, sessionKey: 'xyq-panel', channel: currentChannel() }
       if (option.type === 'image') {
         const selects = params.querySelectorAll('select')
         if (selects[0]) payload.ratio = (selects[0] as HTMLSelectElement).value
@@ -409,6 +432,17 @@ export function mountXyqQuick(): XyqQuickHandle {
   }
 
   modelSelect.addEventListener('change', () => void onModelChange())
+  channelSelect.addEventListener('change', () => {
+    // 切通道：模型名不通用，先清空再按新通道重拉（连同余额）
+    options = []
+    modelSelect.textContent = ''
+    params.textContent = ''
+    paramSpec = {}
+    updateEstimate()
+    setStatus(`已切到 ${channelLabel()}，正在读取模型…`)
+    void loadModels()
+    void refreshBalance()
+  })
   generate.addEventListener('click', () => void startGenerate())
   refreshBtn.addEventListener('click', () => void refreshBalance())
   close.addEventListener('click', () => panel.classList.remove('open'))
@@ -450,9 +484,28 @@ export function mountXyqQuick(): XyqQuickHandle {
   }
   doc.addEventListener('click', onClick)
 
+  let channelSynced = false
+
   return {
     open(): void {
       panel.classList.add('open')
+      // 首次打开：通道跟设置页的「默认通道」对齐，再拉模型与余额
+      if (!channelSynced) {
+        channelSynced = true
+        void (async () => {
+          try {
+            const answer = await getJson(`${BASE}/config`)
+            const cfg = (answer.config ?? {}) as Record<string, unknown>
+            if (cfg.defaultChannel === 'jimeng') channelSelect.value = 'jimeng'
+            else channelSelect.value = 'xyq'
+          } catch {
+            /* 读不到就按默认 xyq */
+          }
+          await refreshBalance()
+          await loadModels()
+        })()
+        return
+      }
       void refreshBalance()
       if (options.length === 0) void loadModels()
     },
