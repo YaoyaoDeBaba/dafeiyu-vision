@@ -105,3 +105,9 @@ xyq_estimate({ type: 'image' | 'video', model: '<key>', duration?: 秒, channel?
 
 ⚠️ **`seedance_2.0` 不是有效 key**（会吃 `unknown or disabled model`）。图片侧常见 key：`seedream_5.5` / `seedream_5.0_pro` /
 `nova_pro` / `gpt_image_2_5_sunburst` / `qwen_image_3.0_pro` / `ali_midjourney_8_2`。
+
+### 云雀花钱没有报价：先读余额，跑完再读一次
+
+同一个 `智能图片V2.5 Fast` 实测出现 **0 / 8 / 10 分**三种成本（0 分那笔事后对账确认是真没扣，4 张那笔 10 分≈2.5/张）。
+**别用面板价目估预算**（它写 2 分/张，是参考值）；云雀也没有报价接口（`xyq_estimate` 对 `channel=xyq` 会拒绝）。
+要花钱就用 `xyq_balance` 前后各读一次，把差值报给用户——这是目前唯一可信的口径。
