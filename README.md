@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 123 条判据
+npm test            # 构建 + 125 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -643,3 +643,25 @@ xyq_estimate({ type: 'image'|'video', model: '<key>', duration?, channel?, canva
 
 画布跑节点时若 `node quote` 回 **`totalMaxCredits: 0`**（如 `seedream_5.0_lite` 那次），运行后 `credit get` 不变（652 → 652）——
 **报价 0 就真不扣费**，积分闸（报价 > 上限才拒绝）对它自然放行。
+
+## 十七、可对账：threadId / runId + 绝对路径（0.12.0）
+
+`generate_image` / `generate_video`（云雀通道）现在把**两个任务 id** 一并回给调用方，并保证 `files` 是**绝对路径**：
+
+```
+生成完成，1 个文件：
+- C:\Users\…\storages\dsh-remote-dafeiyu\xyq-output\7712…png
+任务：threadId=skill_xxx / runId=skill_yyy（可喂 /xyq/result?threadId=&runId= 查状态与对账）
+```
+
+- 两个 id 来自 `generate-image` 提交回包（`thread_id` / `run_id`），原本就在服务层，只是没往外吐；
+- `files` 归一：`output_path` 是相对路径时按「outDir → CWD」依次试存在性，**最终一定回绝对路径**；
+- 服务默认产物目录由 `start.ts` 传入（`<DSH_HOME>/storages/dsh-remote-dafeiyu/xyq-output`），不再落到 CLI 的 CWD。
+
+### 17.1 验收判据（写进测试）
+
+1. `generate_video` 返回 `threadId` / `runId` 非空，且能原样喂 `/xyq/result?threadId=&runId=`；
+2. `files` 每项 `path.isAbsolute()` 为真；
+3. 工具输出里带 `threadId=` / `runId=` 与可抄的 `/xyq/result?threadId=&runId=` 提示。
+
+> 说明：这三条是**离线判据**（假执行器）。真机端到端验一次要花 ~10 积分（云雀出图单价），所以默认不在 CI 里跑；需要时手动跑一次按余额对账。

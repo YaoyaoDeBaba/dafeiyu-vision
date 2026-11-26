@@ -7,6 +7,8 @@
  * 返回约定：`{ ok: true, ... }` 或 `{ ok: false, message }`——message 是**给人看的中文**，
  * 工具层直接把它回给模型/用户，不吞错误。
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import type { CliRunner, CliRunResult } from './cli.js'
 import { locateXyqCli } from './cli.js'
 import { createXyqSelfHealer, type XyqSelfHealer } from './selfheal.js'
@@ -22,8 +24,30 @@ import {
   type GenerationChannel,
 } from './channel.js'
 
+/** 产物目录统一成绝对路径（相对路径按 CWD 解析）。 */
+function absoluteDir(value: string | undefined): string {
+  const raw = value === undefined || value.trim() === '' ? 'xyq_output' : value
+  return path.isAbsolute(raw) ? raw : path.resolve(raw)
+}
+
+/**
+ * 产物路径归一：**永远回绝对路径**（0.12.0）。
+ * CLI 有时回相对路径（相对它的 CWD），所以先按 outDir 拼，拼出来的不存在就按 CWD 再试；
+ * 最后仍不存在也回绝对串——调用方至少能看出它以为的落点在哪。
+ */
+function absoluteArtifact(file: string, outDir: string): string {
+  if (path.isAbsolute(file)) return file
+  const byOutDir = path.resolve(outDir, file)
+  if (fs.existsSync(byOutDir)) return byOutDir
+  const byCwd = path.resolve(file)
+  if (fs.existsSync(byCwd)) return byCwd
+  return byOutDir
+}
+
 export interface XyqServiceDeps {
   configFile: string
+  /** 产物默认目录（绝对路径优先）；不传就 path.resolve('xyq_output')。 */
+  outDir?: string
   run: CliRunner
   resolveCli: () => Promise<string | undefined>
   /**
@@ -156,7 +180,7 @@ export function createXyqService(deps: XyqServiceDeps) {
         for (const key of ['videos', 'images'] as const) {
           const list = Array.isArray(json[key]) ? (json[key] as Array<Record<string, unknown>>) : []
           for (const item of list) {
-            if (typeof item.output_path === 'string' && item.output_path !== '') files.push(item.output_path)
+            if (typeof item.output_path === 'string' && item.output_path !== '') files.push(absoluteArtifact(item.output_path, outDir))
           }
         }
         return { ok: true, files, status }
@@ -496,7 +520,7 @@ export function createXyqService(deps: XyqServiceDeps) {
       const runId = typeof json.run_id === 'string' ? json.run_id : ''
       if (threadId === '' || runId === '') return { ok: false, message: '小云雀没有返回 thread_id / run_id，生成未提交成功' }
       budget.images += 1
-      const outDir = input.outDir ?? 'xyq_output'
+      const outDir = absoluteDir(input.outDir ?? deps.outDir)
       const polled = await poll(threadId, runId, outDir, imageTimeout)
       return {
         ok: polled.ok,
@@ -663,7 +687,7 @@ export function createXyqService(deps: XyqServiceDeps) {
       const runId = typeof json.run_id === 'string' ? json.run_id : ''
       if (threadId === '' || runId === '') return { ok: false, message: '小云雀没有返回 thread_id / run_id，生成未提交成功' }
       budget.videos += 1
-      const outDir = input.outDir ?? 'xyq_output'
+      const outDir = absoluteDir(input.outDir ?? deps.outDir)
       const polled = await poll(threadId, runId, outDir, videoTimeout)
       return {
         ok: polled.ok,

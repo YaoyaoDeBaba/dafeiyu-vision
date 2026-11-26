@@ -183,16 +183,16 @@ function promptOf(config, image) {
   const custom = typeof image.prompt === "string" ? image.prompt.trim() : "";
   return custom !== "" ? custom : config.prompt;
 }
-function deepGet(value, path16) {
+function deepGet(value, path17) {
   let cursor = value;
-  for (const key of path16) {
+  for (const key of path17) {
     if (cursor === null || typeof cursor !== "object") return void 0;
     cursor = cursor[key];
   }
   return cursor;
 }
-function splitPath(path16) {
-  return String(path16 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
+function splitPath(path17) {
+  return String(path17 ?? "").split(".").map((segment) => segment.trim()).filter((segment) => segment !== "");
 }
 function textFrom(value) {
   if (typeof value === "string") return value.trim();
@@ -918,8 +918,8 @@ async function launchCdpBrowser(options) {
       try {
         const shot = await call("Page.captureScreenshot", { format: "png" }, 15e3);
         if (shot?.data) {
-          const fs11 = await import("node:fs");
-          fs11.writeFileSync(file, Buffer.from(shot.data, "base64"));
+          const fs12 = await import("node:fs");
+          fs12.writeFileSync(file, Buffer.from(shot.data, "base64"));
         }
       } catch {
       }
@@ -2271,7 +2271,11 @@ function startVision(ctx, deps) {
 }
 
 // src/xyq/start.ts
-import path15 from "node:path";
+import path16 from "node:path";
+
+// src/xyq/service.ts
+import fs9 from "node:fs";
+import path12 from "node:path";
 
 // src/xyq/cli.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -2936,6 +2940,18 @@ function unavailableMessage(probe) {
 }
 
 // src/xyq/service.ts
+function absoluteDir(value) {
+  const raw = value === void 0 || value.trim() === "" ? "xyq_output" : value;
+  return path12.isAbsolute(raw) ? raw : path12.resolve(raw);
+}
+function absoluteArtifact(file, outDir) {
+  if (path12.isAbsolute(file)) return file;
+  const byOutDir = path12.resolve(outDir, file);
+  if (fs9.existsSync(byOutDir)) return byOutDir;
+  const byCwd = path12.resolve(file);
+  if (fs9.existsSync(byCwd)) return byCwd;
+  return byOutDir;
+}
 function parseJson(text) {
   const trimmed = text.trim();
   if (trimmed === "") return void 0;
@@ -3021,7 +3037,7 @@ ${result.stderr}`;
         for (const key of ["videos", "images"]) {
           const list = Array.isArray(json3[key]) ? json3[key] : [];
           for (const item of list) {
-            if (typeof item.output_path === "string" && item.output_path !== "") files.push(item.output_path);
+            if (typeof item.output_path === "string" && item.output_path !== "") files.push(absoluteArtifact(item.output_path, outDir));
           }
         }
         return { ok: true, files, status };
@@ -3296,7 +3312,7 @@ ${result.stderr}`;
       const runId = typeof json3.run_id === "string" ? json3.run_id : "";
       if (threadId === "" || runId === "") return { ok: false, message: "\u5C0F\u4E91\u96C0\u6CA1\u6709\u8FD4\u56DE thread_id / run_id\uFF0C\u751F\u6210\u672A\u63D0\u4EA4\u6210\u529F" };
       budget.images += 1;
-      const outDir = input.outDir ?? "xyq_output";
+      const outDir = absoluteDir(input.outDir ?? deps.outDir);
       const polled = await poll(threadId, runId, outDir, imageTimeout);
       return {
         ok: polled.ok,
@@ -3423,7 +3439,7 @@ ${result.stderr}`;
       const runId = typeof json3.run_id === "string" ? json3.run_id : "";
       if (threadId === "" || runId === "") return { ok: false, message: "\u5C0F\u4E91\u96C0\u6CA1\u6709\u8FD4\u56DE thread_id / run_id\uFF0C\u751F\u6210\u672A\u63D0\u4EA4\u6210\u529F" };
       budget.videos += 1;
-      const outDir = input.outDir ?? "xyq_output";
+      const outDir = absoluteDir(input.outDir ?? deps.outDir);
       const polled = await poll(threadId, runId, outDir, videoTimeout);
       return {
         ok: polled.ok,
@@ -3663,14 +3679,14 @@ function xyqFileHandler(deps) {
     const url = new URL(request.url ?? "/", "http://localhost");
     const target = (url.searchParams.get("path") ?? "").trim();
     if (target === "") return json2(response, 400, { ok: false, error: "\u7F3A\u5C11 path" });
-    const path16 = await import("node:path");
-    const fs11 = await import("node:fs");
-    const resolved = path16.resolve(target);
-    const root = path16.resolve(deps.outDir);
-    if (!resolved.startsWith(root + path16.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
+    const path17 = await import("node:path");
+    const fs12 = await import("node:fs");
+    const resolved = path17.resolve(target);
+    const root = path17.resolve(deps.outDir);
+    if (!resolved.startsWith(root + path17.sep)) return json2(response, 403, { ok: false, error: "path-escape" });
     try {
-      const data = fs11.readFileSync(resolved);
-      const ext = path16.extname(resolved).toLowerCase();
+      const data = fs12.readFileSync(resolved);
+      const ext = path17.extname(resolved).toLowerCase();
       const mime = ext === ".mp4" ? "video/mp4" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "application/octet-stream";
       response.writeHead(200, { "Content-Type": mime, "Content-Length": data.byteLength });
       if (request.method === "HEAD") response.end();
@@ -3683,7 +3699,7 @@ function xyqFileHandler(deps) {
 
 // src/xyq/skill.ts
 import { readFileSync as readFileSync3 } from "node:fs";
-import path12 from "node:path";
+import path13 from "node:path";
 var XYQ_SKILL_NAME = "dafeiyu-xyq";
 var XYQ_GUIDE_FALLBACK = [
   "# \u751F\u6210\u901A\u9053\uFF1A\u5C0F\u4E91\u96C0 vs \u5373\u68A6",
@@ -3701,7 +3717,7 @@ var cachedBody2;
 function readXyqSkillBody(assetsRoot) {
   if (cachedBody2 !== void 0) return cachedBody2;
   try {
-    cachedBody2 = stripFrontmatter2(readFileSync3(path12.join(assetsRoot, "SKILL.md"), "utf8"));
+    cachedBody2 = stripFrontmatter2(readFileSync3(path13.join(assetsRoot, "SKILL.md"), "utf8"));
   } catch {
     cachedBody2 = XYQ_GUIDE_FALLBACK;
   }
@@ -3745,7 +3761,10 @@ function resultText(result) {
   const files = result.files ?? [];
   const lines = [`\u751F\u6210\u5B8C\u6210\uFF0C${files.length} \u4E2A\u6587\u4EF6\uFF1A`, ...files.map((file) => `- ${file}`)];
   if (result.webLink !== void 0) lines.push(`\u5728\u7EBF\u67E5\u770B\uFF1A${result.webLink}`);
-  if (result.threadId !== void 0) lines.push(`\u4EFB\u52A1\uFF1A${result.threadId}`);
+  if (result.threadId !== void 0 && result.threadId !== "") {
+    const runPart = result.runId !== void 0 && result.runId !== "" ? ` / runId=${result.runId}` : "";
+    lines.push(`\u4EFB\u52A1\uFF1AthreadId=${result.threadId}${runPart}\uFF08\u53EF\u5582 /xyq/result?threadId=&runId= \u67E5\u72B6\u6001\u4E0E\u5BF9\u8D26\uFF09`);
+  }
   return lines.join("\n");
 }
 function xyqTools(service, deps = {}) {
@@ -3941,7 +3960,7 @@ function xyqTools(service, deps = {}) {
 
 // src/xyq/jimeng/service.ts
 import os5 from "node:os";
-import path13 from "node:path";
+import path14 from "node:path";
 function parseEnvelope(stdout) {
   const lines = stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -4029,8 +4048,8 @@ function createJimengService(deps) {
   });
   const waitImage = deps.waitImageSec ?? 120;
   const waitVideo = deps.waitVideoSec ?? 300;
-  const outDir = deps.outDir ?? path13.join(os5.homedir(), "jimeng-output");
-  const withSeparator = (dir) => dir.endsWith("/") || dir.endsWith("\\") ? dir : `${dir}${path13.sep}`;
+  const outDir = deps.outDir ?? path14.join(os5.homedir(), "jimeng-output");
+  const withSeparator = (dir) => dir.endsWith("/") || dir.endsWith("\\") ? dir : `${dir}${path14.sep}`;
   async function probe() {
     const paths = locate();
     if (paths.novel === void 0) {
@@ -4211,16 +4230,16 @@ ${result.stderr}`;
 }
 
 // src/xyq/canvas/cli.ts
-import fs9 from "node:fs";
+import fs10 from "node:fs";
 function locateCanvasCli(deps = {}) {
   const env = deps.env ?? process.env;
   const explicit = (env.DREAMINA_CANVAS_CLI ?? "").trim();
-  if (explicit !== "" && (deps.exists ? deps.exists(explicit) : fs9.existsSync(explicit))) return explicit;
+  if (explicit !== "" && (deps.exists ? deps.exists(explicit) : fs10.existsSync(explicit))) return explicit;
   return locateJimengCli(deps).canvas;
 }
 function defaultExists(file) {
   try {
-    return fs9.statSync(file).isFile();
+    return fs10.statSync(file).isFile();
   } catch {
     return false;
   }
@@ -4295,9 +4314,9 @@ ${result.stderr}`;
 }
 
 // src/xyq/canvas/service.ts
-import fs10 from "node:fs";
+import fs11 from "node:fs";
 import os6 from "node:os";
-import path14 from "node:path";
+import path15 from "node:path";
 function asRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
@@ -4316,9 +4335,9 @@ function createCanvasService(deps) {
   const waitMs = deps.loginWaitMs ?? 12e4;
   async function downloadResources(canvasId, resourceIds) {
     if (resourceIds.length === 0) return { ok: false, message: "download \u9700\u8981 resourceIds\uFF08\u6765\u81EA node-run / node-show\uFF09" };
-    const dir = deps.outDir ?? path14.join(os6.homedir(), "jimeng-output");
+    const dir = deps.outDir ?? path15.join(os6.homedir(), "jimeng-output");
     try {
-      fs10.mkdirSync(dir, { recursive: true });
+      fs11.mkdirSync(dir, { recursive: true });
     } catch {
     }
     const paths = [];
@@ -4882,19 +4901,20 @@ function startXyq(ctx, deps) {
   const probe = {};
   const packageRoot2 = (() => {
     try {
-      return path15.resolve(path15.dirname(fileURLToPath2(import.meta.url)), "..", "..");
+      return path16.resolve(path16.dirname(fileURLToPath2(import.meta.url)), "..", "..");
     } catch {
       return process.cwd();
     }
   })();
-  const skillAssetsRoot = path15.join(packageRoot2, "assets", "skills", XYQ_SKILL_NAME);
+  const skillAssetsRoot = path16.join(packageRoot2, "assets", "skills", XYQ_SKILL_NAME);
   const run = deps.run ?? defaultCliRunner;
   const resolveCli = deps.resolveCli ?? (() => resolveCliPath(run, { log: (message, fields) => deps.log(message, fields) }));
   const configFile = resolveXyqConfigFile(deps.dshHome);
+  const outDir = path16.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const jimengChannel = deps.jimengChannel ?? createJimengService({
     run,
     log: deps.log,
-    outDir: deps.jimengOutDir ?? path15.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
+    outDir: deps.jimengOutDir ?? path16.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "jimeng-output"),
     ...deps.jimengLocateDeps === void 0 ? {} : { locateDeps: deps.jimengLocateDeps }
   });
   const canvasCli = createCanvasCli({ run });
@@ -4905,13 +4925,14 @@ function startXyq(ctx, deps) {
     resolveCli,
     locateCli: () => locateXyqCli(),
     log: deps.log,
+    // 0.12.0：产物目录显式给（绝对路径），工具回到的 files 就不再是相对 `xyq_output\xxx.png`
+    outDir,
     channels: { jimeng: jimengChannel }
   });
   const disposers = [];
   let unregister;
   let started = false;
   let stopped = false;
-  const outDir = path15.join(deps.dshHome, "storages", "dsh-remote-dafeiyu", "xyq-output");
   const routeDeps = { service, outDir, log: deps.log, canvas: canvasService };
   const tryStart = () => {
     if (started || stopped) return;
@@ -4927,7 +4948,7 @@ function startXyq(ctx, deps) {
         [XYQ_RESULT_ROUTE, xyqResultHandler(routeDeps)],
         [XYQ_FILE_ROUTE, xyqFileHandler(routeDeps)]
       ];
-      for (const [path16, handler] of registers) disposers.push(web.register({ kind: "exact", path: path16, handler }));
+      for (const [path17, handler] of registers) disposers.push(web.register({ kind: "exact", path: path17, handler }));
       unregister = () => {
         for (const dispose of disposers.splice(0)) dispose();
       };

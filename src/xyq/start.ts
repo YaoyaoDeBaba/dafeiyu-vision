@@ -91,6 +91,8 @@ export function startXyq(
     deps.resolveCli ??
     (() => resolveCliPath(run, { log: (message, fields) => deps.log(message, fields) }))
   const configFile = resolveXyqConfigFile(deps.dshHome)
+  // 产物目录（绝对路径）：路由的 file 白名单与服务默认 outDir 共用同一个
+  const outDir = path.join(deps.dshHome, 'storages', 'dsh-remote-dafeiyu', 'xyq-output')
   // 即梦通道：二进制按绝对路径 spawn（安装器不进 PATH），产物落 storages 里与云雀同层。
   const jimengChannel =
     deps.jimengChannel ??
@@ -111,6 +113,8 @@ export function startXyq(
     resolveCli,
     locateCli: () => locateXyqCli(),
     log: deps.log,
+    // 0.12.0：产物目录显式给（绝对路径），工具回到的 files 就不再是相对 `xyq_output\xxx.png`
+    outDir,
     channels: { jimeng: jimengChannel },
   })
 
@@ -119,7 +123,6 @@ export function startXyq(
   let started = false
   let stopped = false
 
-  const outDir = path.join(deps.dshHome, 'storages', 'dsh-remote-dafeiyu', 'xyq-output')
   const routeDeps: XyqRouteDeps = { service, outDir, log: deps.log, canvas: canvasService }
   const tryStart = (): void => {
     if (started || stopped) return

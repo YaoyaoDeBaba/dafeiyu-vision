@@ -69,12 +69,16 @@ function sessionKeyOf(exec: unknown): string {
   return typeof id === 'string' && id !== '' ? id : 'default'
 }
 
-function resultText(result: { ok: boolean; files?: string[]; webLink?: string; message?: string; threadId?: string }): string {
+function resultText(result: { ok: boolean; files?: string[]; webLink?: string; message?: string; threadId?: string; runId?: string }): string {
   if (!result.ok) return `生成失败：${result.message ?? '未知原因'}`
   const files = result.files ?? []
   const lines = [`生成完成，${files.length} 个文件：`, ...files.map((file) => `- ${file}`)]
   if (result.webLink !== undefined) lines.push(`在线查看：${result.webLink}`)
-  if (result.threadId !== undefined) lines.push(`任务：${result.threadId}`)
+  // 0.12.0：这两个 id 原样回给调用方，能直接喂 /xyq/result?threadId=&runId= 逐笔对账
+  if (result.threadId !== undefined && result.threadId !== '') {
+    const runPart = result.runId !== undefined && result.runId !== '' ? ` / runId=${result.runId}` : ''
+    lines.push(`任务：threadId=${result.threadId}${runPart}（可喂 /xyq/result?threadId=&runId= 查状态与对账）`)
+  }
   return lines.join('\n')
 }
 

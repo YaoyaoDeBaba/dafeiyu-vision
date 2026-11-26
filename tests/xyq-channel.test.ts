@@ -588,3 +588,45 @@ test('jimeng.estimate：argv 拼对（credit estimate + --duration），解析 e
   assert.ok(calls[1]?.includes('--duration') && calls[1]?.includes('4'), '视频报价必须带 --duration')
   assert.ok(calls[2] === undefined, '不该有第三次调用')
 })
+
+// ── 0.12.0：threadId/runId 出参 + 绝对产物路径 ──────────────────────
+
+test('0.12.0：generate_video 回 threadId/runId（可喂 /xyq/result），files 为绝对路径', async () => {
+  const h = makeHarness({
+    xyq: {
+      'generate-video': { stdout: JSON.stringify({ status: 'ok', thread_id: 'th-1', run_id: 'rn-1' }) },
+      'query-result': { stdout: JSON.stringify({ status: 'succeeded', videos: [{ output_path: 'rel-out.mp4' }] }) },
+    },
+  })
+  try {
+    const result = await h.service.generateVideo({ prompt: '第一镜', model: 'Seedance_2.0_mini_lite', duration: 4, sessionKey: 's1' })
+    assert.equal(result.ok, true)
+    assert.equal(result.threadId, 'th-1', 'threadId 必须回给调用方')
+    assert.equal(result.runId, 'rn-1', 'runId 必须回给调用方')
+    const file = result.files?.[0] ?? ''
+    assert.ok(path.isAbsolute(file), `产物必须是绝对路径，实际是 ${file}`)
+    assert.ok(file.endsWith('rel-out.mp4'))
+  } finally {
+    h.cleanup()
+  }
+})
+
+test('0.12.0：工具输出里带 threadId= / runId=（能直接抄去查状态）', async () => {
+  const h = makeHarness({
+    xyq: {
+      'generate-image': { stdout: JSON.stringify({ status: 'ok', thread_id: 'th-2', run_id: 'rn-2' }) },
+      'query-result': { stdout: JSON.stringify({ status: 'succeeded', images: [{ output_path: 'a.png' }] }) },
+    },
+  })
+  try {
+    const tool = xyqTools(h.service).find((item) => item.name === 'generate_image') as {
+      execute: (args: Record<string, unknown>) => Promise<string>
+    }
+    const text = await tool.execute({ prompt: '鲸鱼', model: '智能图片V2.5 Fast', channel: 'xyq' })
+    assert.match(text, /threadId=th-2/)
+    assert.match(text, /runId=rn-2/)
+    assert.match(text, /\/xyq\/result\?threadId=&runId=/)
+  } finally {
+    h.cleanup()
+  }
+})
