@@ -4933,6 +4933,8 @@ function startXyq(ctx, deps) {
   let unregister;
   let started = false;
   let stopped = false;
+  let toolsRegistered = false;
+  let toolPoll;
   const routeDeps = { service, outDir, log: deps.log, canvas: canvasService };
   const tryStart = () => {
     if (started || stopped) return;
@@ -5015,16 +5017,48 @@ function startXyq(ctx, deps) {
   if (!config.enabled) {
     probe.tools = "disabled-by-config";
   } else {
-    try {
-      const tools = ctx.get?.("tools", true);
-      if (tools && typeof tools.register === "function") {
-        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot), canvas: canvasService }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool);
-        probe.tools = "registered";
-      } else {
-        probe.tools = "no-tools";
+    const attachTools = (host) => {
+      if (toolsRegistered || host === void 0 || typeof host.register !== "function") return false;
+      try {
+        const definitions = [
+          ...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot), canvas: canvasService }),
+          ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })
+        ];
+        for (const tool of definitions) host.register(tool);
+        toolsRegistered = true;
+        probe.tools = `registered(${definitions.length})`;
+        return true;
+      } catch (error) {
+        probe.tools = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
+        return false;
       }
-    } catch (error) {
-      probe.tools = `threw: ${String(error?.message ?? error).slice(0, 80)}`;
+    };
+    if (!attachTools(ctx.get?.("tools", true))) {
+      probe.tools = probe.tools ?? "pending";
+      const pollMs = deps.toolsPollMs ?? 500;
+      const waitLimit = deps.toolsWaitMs ?? 3e4;
+      let waited = 0;
+      toolPoll = setInterval(() => {
+        waited += pollMs;
+        if (stopped || toolsRegistered) {
+          if (toolPoll !== void 0) clearInterval(toolPoll);
+          toolPoll = void 0;
+          return;
+        }
+        if (attachTools(ctx.get?.("tools", true))) {
+          if (toolPoll !== void 0) clearInterval(toolPoll);
+          toolPoll = void 0;
+          deps.log("\u9CB8\u9C7C\u505A\u68A6\u5DE5\u5177\u5DF2\u6CE8\u518C\uFF08tools \u670D\u52A1\u665A\u5230\uFF09", { waitedMs: waited });
+          return;
+        }
+        if (waited >= waitLimit) {
+          if (toolPoll !== void 0) clearInterval(toolPoll);
+          toolPoll = void 0;
+          probe.tools = "no-tools\uFF08\u7B49\u4E86 30 \u79D2\uFF09";
+          deps.log("\u6CA1\u62FF\u5230 tools \u670D\u52A1\uFF0C\u751F\u6210\u5DE5\u5177\u6CA1\u6CE8\u518C\uFF08\u8DEF\u7531\u4E0E\u8BBE\u7F6E\u9875\u4E0D\u53D7\u5F71\u54CD\uFF09");
+        }
+      }, deps.toolsPollMs ?? 500);
+      toolPoll.unref?.();
     }
     try {
       const systemPrompt = ctx.get?.("systemPrompt", true);
@@ -5077,6 +5111,10 @@ function startXyq(ctx, deps) {
       } catch {
       }
       unregister = void 0;
+      if (toolPoll !== void 0) {
+        clearInterval(toolPoll);
+        toolPoll = void 0;
+      }
     }
   };
 }

@@ -74,6 +74,13 @@ export function startXyq(
     jimengLocateDeps?: LocateDeps
     /** 即梦产物落盘目录；默认 <dshHome>/storages/dsh-remote-dafeiyu/jimeng-output。 */
     jimengOutDir?: string
+    /**
+     * 等 `tools` 服务（晚到服务）的轮询间隔，默认 500ms。
+     * 测试注入用：让它更快跑到「晚到」的那一刻。
+     */
+    toolsPollMs?: number
+    /** 等 `tools` 服务的最长时间，默认 30 秒（超时就 no-tools 并留日志）。 */
+    toolsWaitMs?: number
   },
 ): XyqHandle {
   const probe: Record<string, string> = {}
@@ -122,6 +129,10 @@ export function startXyq(
   let unregister: (() => void) | undefined
   let started = false
   let stopped = false
+  /** 工具是否已注册（轮询等晚到的 tools 服务，避免重复注册）。 */
+  let toolsRegistered = false
+  /** 等 tools 服务的定时器（stop() 要清掉）。 */
+  let toolPoll: NodeJS.Timeout | undefined
 
   const routeDeps: XyqRouteDeps = { service, outDir, log: deps.log, canvas: canvasService }
   const tryStart = (): void => {
@@ -209,17 +220,54 @@ export function startXyq(
   if (!config.enabled) {
     probe.tools = 'disabled-by-config'
   } else {
-    try {
-      const tools = ctx.get?.('tools', true) as { register?: (definition: Record<string, unknown>) => unknown } | undefined
-      if (tools && typeof tools.register === 'function') {
+    /*
+     * `tools` 是**晚到服务**（与识图同一条纪律，2026-11-27 真机暴露）：
+     * `apply` 期间 `ctx.get('tools')` 可能还没有——取一次没有就 `no-tools` 会**永久**丢掉工具。
+     * 所以这里轮询等它（最多 30 秒、500ms 一次），拿到就注册；stop() 会清掉定时器。
+     */
+    const attachTools = (host: { register?: (definition: Record<string, unknown>) => unknown } | undefined): boolean => {
+      if (toolsRegistered || host === undefined || typeof host.register !== 'function') return false
+      try {
         // `xyq_guide` 读的就是 skill 那份 SKILL.md —— 单一真源（同识图的做法）。
-        for (const tool of [...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot), canvas: canvasService }), ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits })]) tools.register(tool)
-        probe.tools = 'registered'
-      } else {
-        probe.tools = 'no-tools'
+        const definitions = [
+          ...xyqTools(service, { guideBody: () => readXyqSkillBody(skillAssetsRoot), canvas: canvasService }),
+          ...canvasTools(canvasService, { maxCredits: config.canvasMaxCredits }),
+        ]
+        for (const tool of definitions) host.register(tool)
+        toolsRegistered = true
+        probe.tools = `registered(${definitions.length})`
+        return true
+      } catch (error) {
+        probe.tools = `threw: ${String((error as Error)?.message ?? error).slice(0, 80)}`
+        return false
       }
-    } catch (error) {
-      probe.tools = `threw: ${String((error as Error)?.message ?? error).slice(0, 80)}`
+    }
+    if (!attachTools(ctx.get?.('tools', true) as { register?: (definition: Record<string, unknown>) => unknown } | undefined)) {
+      probe.tools = probe.tools ?? 'pending'
+      const pollMs = deps.toolsPollMs ?? 500
+      const waitLimit = deps.toolsWaitMs ?? 30_000
+      let waited = 0
+      toolPoll = setInterval(() => {
+        waited += pollMs
+        if (stopped || toolsRegistered) {
+          if (toolPoll !== undefined) clearInterval(toolPoll)
+          toolPoll = undefined
+          return
+        }
+        if (attachTools(ctx.get?.('tools', true) as { register?: (definition: Record<string, unknown>) => unknown } | undefined)) {
+          if (toolPoll !== undefined) clearInterval(toolPoll)
+          toolPoll = undefined
+          deps.log('鲸鱼做梦工具已注册（tools 服务晚到）', { waitedMs: waited })
+          return
+        }
+        if (waited >= waitLimit) {
+          if (toolPoll !== undefined) clearInterval(toolPoll)
+          toolPoll = undefined
+          probe.tools = 'no-tools（等了 30 秒）'
+          deps.log('没拿到 tools 服务，生成工具没注册（路由与设置页不受影响）')
+        }
+      }, deps.toolsPollMs ?? 500)
+      toolPoll.unref?.()
     }
     try {
       const systemPrompt = ctx.get?.('systemPrompt', true) as
@@ -285,6 +333,11 @@ export function startXyq(
         /* 停机不许抛 */
       }
       unregister = undefined
+      // 还在等 tools 服务就停掉轮询（否则定时器会拖住进程）
+      if (toolPoll !== undefined) {
+        clearInterval(toolPoll)
+        toolPoll = undefined
+      }
     },
   }
 }

@@ -630,3 +630,69 @@ test('0.12.0：工具输出里带 threadId= / runId=（能直接抄去查状态�
     h.cleanup()
   }
 })
+
+// ── 0.12.1：tools 是晚到服务，xyq 必须轮询等它 ─────────────────────
+
+test('0.12.1：tools 服务晚到 5 秒，generate_image 仍要注册成功（轮询，不放弃）', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'drc-late-'))
+  const registered: string[] = []
+  const startedAt = Date.now()
+  const host = { register: (definition: Record<string, unknown>) => { registered.push(String(definition.name)) } }
+  // 前 5 秒 ctx.get('tools') 返回 undefined —— 模拟晚到服务
+  const ctx = {
+    get: (key: string) => (key !== 'tools' ? undefined : Date.now() - startedAt >= 5000 ? host : undefined),
+  }
+  const handle = startXyq(ctx as never, {
+    dshHome: dir,
+    log: () => {},
+    toolsPollMs: 100,
+    toolsWaitMs: 15_000,
+    jimengChannel: {
+      id: 'jimeng',
+      label: '即梦',
+      probe: async () => ({ id: 'jimeng', label: '即梦', available: false, reason: '测试不装' }),
+      generateImage: async () => ({ ok: false, message: 'stub' }),
+      generateVideo: async () => ({ ok: false, message: 'stub' }),
+      balance: async () => ({ ok: false, message: 'stub' }),
+      models: async () => ({ ok: false, message: 'stub' }),
+    },
+  })
+  try {
+    assert.equal(registered.length, 0, 'tools 没到之前不该注册任何工具')
+    await new Promise((resolve) => setTimeout(resolve, 6000))
+    assert.ok(registered.includes('generate_image'), `晚到之后必须注册上，实际：${registered.join(',')}`)
+    assert.ok(registered.includes('xyq_canvas'), '画布工具也要一起注册')
+    assert.match(String(handle.probe.tools), /^registered/)
+  } finally {
+    handle.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('0.12.1：等不到 tools 时到点收手（no-tools + 日志），不会一直挂着', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'drc-late2-'))
+  const logs: string[] = []
+  const handle = startXyq({ get: () => undefined } as never, {
+    dshHome: dir,
+    log: (message: string) => logs.push(message),
+    toolsPollMs: 50,
+    toolsWaitMs: 400,
+    jimengChannel: {
+      id: 'jimeng',
+      label: '即梦',
+      probe: async () => ({ id: 'jimeng', label: '即梦', available: false, reason: '测试不装' }),
+      generateImage: async () => ({ ok: false, message: 'stub' }),
+      generateVideo: async () => ({ ok: false, message: 'stub' }),
+      balance: async () => ({ ok: false, message: 'stub' }),
+      models: async () => ({ ok: false, message: 'stub' }),
+    },
+  })
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    assert.match(String(handle.probe.tools), /no-tools/)
+    assert.ok(logs.some((line) => line.includes('没拿到 tools 服务')), '要给一行中文日志')
+  } finally {
+    handle.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

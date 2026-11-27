@@ -109,7 +109,7 @@ export const name = 'dsh-vision-dafeiyu'
 npm install
 npm run typecheck   # 宿主面 + 浏览器面各一遍
 npm run build       # tsc → dist/ + dist/bundle/{index.js,client.cjs}
-npm test            # 构建 + 125 条判据
+npm test            # 构建 + 127 条判据
 npm run check       # 产物是否与源码同步（CI 用）
 ```
 
@@ -682,3 +682,23 @@ xyq_estimate({ type: 'image'|'video', model: '<key>', duration?, channel?, canva
 
 结论：云雀更像「按任务有起步价 + 空间/模型差异」，且**没有报价接口**（`xyq_estimate` 对 `channel=xyq` 会如实拒绝）。
 所以云雀侧的稳妥做法是：**跑之前读一次 `xyq_balance`、跑完再读一次**，把两次数记下来——这是目前唯一可信的成本口径。
+
+## 十八、工具注册也要等「晚到的 tools 服务」（0.12.1）
+
+真机暴露（2026-11-27）：宿主重启后 `recognize_image` 都在、`generate_image` 等**一个都没注册**。
+根因不是工具定义，而是 `src/xyq/start.ts` 原来是「`ctx.get('tools', true)` 取**一次**，拿不到就 `probe.tools='no-tools'` 放弃」——
+而同一次 `apply` 里识图侧（`src/vision/start.ts`）做了**最多 30 秒轮询**，所以识图等到了、鲸鱼做梦没等。
+
+改法（与识图同一条纪律）：
+
+- `attachTools(host)` 抽成函数，`toolsRegistered` 去重；
+- 第一次拿不到就 `probe.tools='pending'`，然后**每 500ms 轮询、最多 30 秒**（`setInterval(...).unref()`，不拖进程）；
+- 拿到后注册并写 `probe.tools='registered(N)'` + 一行中文日志「鲸鱼做梦工具已注册（tools 服务晚到）」；
+- 30 秒仍没有 ⇒ `probe.tools='no-tools（等了 30 秒）'` + 一行日志，**路由与设置页照常工作**；
+- `stop()` 里清掉定时器（否则晚到的轮询会拖住宿主退出）。
+
+### 18.1 判据
+
+1. `ctx.get('tools')` **晚到 5 秒**时，`generate_image`（以及 `xyq_canvas`）仍然注册成功；
+2. 一直等不到 ⇒ 到点收手，`probe.tools` 里是 `no-tools` 且留了中文日志（不会无限挂着）；
+3. 测试用 `toolsPollMs` / `toolsWaitMs` 注入更短的间隔，不用真等 30 秒。
